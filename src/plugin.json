@@ -16,7 +16,12 @@
       "small": "img/logo.svg",
       "large": "img/logo.svg"
     },
-    "screenshots": [],
+    "screenshots": [
+      {
+        "name": "Ask about a dashboard",
+        "path": "img/screenshot-chat.png"
+      }
+    ],
     "version": "%VERSION%",
     "updated": "%TODAY%",
     "links": [
@@ -66,12 +71,12 @@
     "addedLinks": [
       {
         "targets": ["grafana/dashboard/sidebar/v1"],
-        "title": "Ask AI",
+        "title": "Ask Lookout AI",
         "description": "Open the assistant next to this dashboard"
       },
       {
         "targets": ["grafana/dashboard/panel/menu"],
-        "title": "Ask AI",
+        "title": "Ask Lookout AI",
         "description": "Ask the assistant about this panel"
       },
       {
@@ -81,7 +86,7 @@
       },
       {
         "targets": ["grafana/commandpalette/action"],
-        "title": "Ask AI…",
+        "title": "Ask Lookout AI…",
         "description": "Open the AI assistant"
       }
     ]

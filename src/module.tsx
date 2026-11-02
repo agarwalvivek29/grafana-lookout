@@ -80,7 +80,7 @@ export const plugin = new AppPlugin<{}>()
   // Dashboard sidebar button (Grafana 13 dashboard experience): opens the assistant next to the dashboard.
   .addLink({
     targets: [PluginExtensionPoints.DashboardSidebar],
-    title: 'Ask AI',
+    title: 'Ask Lookout AI',
     description: 'Open the assistant next to this dashboard',
     icon: 'ai-sparkle',
     onClick: () => {
@@ -89,7 +89,7 @@ export const plugin = new AppPlugin<{}>()
   })
   .addLink<PluginExtensionPanelContext>({
     targets: [PluginExtensionPoints.DashboardPanelMenu],
-    title: 'Ask AI',
+    title: 'Ask Lookout AI',
     description: 'Ask the assistant about this panel',
     icon: 'ai-sparkle',
     onClick: (_e, helpers) => {
@@ -110,7 +110,7 @@ export const plugin = new AppPlugin<{}>()
   })
   .addLink({
     targets: [PluginExtensionPoints.CommandPalette],
-    title: 'Ask AI…',
+    title: 'Ask Lookout AI…',
     description: 'Open the AI assistant',
     icon: 'ai-sparkle',
     onClick: () => {

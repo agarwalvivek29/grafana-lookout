@@ -48,3 +48,11 @@ ci/
 .eslintcache
 .env
 .gstack/
+
+# AI agent scaffolding from create-plugin (local only)
+.claude/
+.codex/
+.config/AGENTS/
+AGENTS.md
+CLAUDE.md
+GEMINI.md

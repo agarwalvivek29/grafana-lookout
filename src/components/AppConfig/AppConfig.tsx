@@ -386,7 +386,7 @@ const AppConfig = ({ plugin }: AppConfigProps) => {
       {!plugin.meta.enabled && (
         <Alert severity="info" title="Lookout is not enabled yet">
           <Stack direction="column" gap={1} alignItems="flex-start">
-            <span>Enable it to add “Ask AI” to dashboards, panel menus and the command palette.</span>
+            <span>Enable it to add “Ask Lookout AI” to dashboards, panel menus and the command palette.</span>
             <Button size="sm" onClick={enable}>
               Enable Lookout
             </Button>

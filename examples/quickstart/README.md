@@ -14,7 +14,7 @@ docker compose up -d
 ```
 
 Open http://localhost:3000, go to **Apps → Lookout → Setup**, choose a model provider, paste an API key
-and click **Save and test**. Then open **Dashboards → Quickstart → Demo services** and click **Ask AI**.
+and click **Save and test**. Then open **Dashboards → Quickstart → Demo services** and click **Ask Lookout AI**.
 
 Things to ask:
 

@@ -9,11 +9,13 @@ service in between: the model is whatever OpenAI-compatible endpoint you choose 
 a local Ollama, or your own gateway), reached through the open-source
 [Grafana LLM plugin](https://grafana.com/grafana/plugins/grafana-llm-app/).
 
+![Lookout answering a question next to a dashboard](https://raw.githubusercontent.com/agarwalvivek29/grafana-lookout/main/src/img/screenshot-chat.png)
+
 ## What it does
 
-- **Ask from where you are.** "Ask AI" on every dashboard opens a side panel that knows the dashboard,
-  its variables and time range, and keeps up when you change them. Panel menus get "Ask AI" and
-  "Explain with AI"; the command palette gets "Ask AI…"; there is also a full-page chat.
+- **Ask from where you are.** "Ask Lookout AI" on every dashboard opens a side panel that knows the dashboard,
+  its variables and time range, and keeps up when you change them. Panel menus get "Ask Lookout AI" and
+  "Explain with AI"; the command palette gets "Ask Lookout AI…"; there is also a full-page chat.
 - **Answers you can check.** Each answer ends with links: an existing dashboard panel when one shows
   the answer, otherwise an Explore query. Links are previewed under the answer, as a picture of the
   panel (with the Grafana Image Renderer) or a live chart.
@@ -64,7 +66,7 @@ With the Grafana Helm chart, put both variables under `env:` in your values.
 2. Under **AI model**, choose a provider, paste the API key, enter a model ID and click **Save and test**.
    The test checks that the model can call tools.
 3. Check **Data sources**: it lists the metrics, logs and traces sources Lookout found.
-4. Open any dashboard and click **Ask AI** in the dashboard sidebar.
+4. Open any dashboard and click **Ask Lookout AI** in the dashboard sidebar.
 
 Prefer configuration as code? Provision the LLM plugin instead of using step 2:
 
