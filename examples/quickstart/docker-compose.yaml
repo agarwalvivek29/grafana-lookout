@@ -1,0 +1,51 @@
+# Lookout quickstart: Grafana + Prometheus + Loki + Tempo with generated traffic from three demo services.
+# See README.md in this folder. For local trial only: anonymous users are Grafana admins here.
+x-traffic: &traffic
+  image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.162.0
+  restart: unless-stopped
+  depends_on: [lgtm]
+
+services:
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION:-13.2.4}
+    ports:
+      - '${GRAFANA_PORT:-3000}:3000'
+    environment:
+      GF_PLUGINS_PREINSTALL_SYNC: grafana-llm-app
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: agarwalvivek29-lookout-app
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: 'true'
+    volumes:
+      # Built plugin (npm run build && mage -v). After the first release this can be replaced by
+      # GF_PLUGINS_PREINSTALL_SYNC=grafana-llm-app,agarwalvivek29-lookout-app
+      - ../../dist:/var/lib/grafana/plugins/agarwalvivek29-lookout-app
+      - ./provisioning:/etc/grafana/provisioning
+    depends_on: [lgtm]
+
+  # Prometheus, Loki, Tempo and an OpenTelemetry collector in one container (its own Grafana is not exposed).
+  # Tempo's metrics generator writes span metrics (traces_spanmetrics_*) to Prometheus.
+  lgtm:
+    image: grafana/otel-lgtm:0.36.0
+
+  checkout-traffic:
+    <<: *traffic
+    command: [traces, --otlp-endpoint=lgtm:4317, --otlp-insecure, --duration=inf, --rate=8, --service=checkout, --child-spans=2, --span-duration=40ms, --status-code=Ok]
+  checkout-errors:
+    <<: *traffic
+    command: [traces, --otlp-endpoint=lgtm:4317, --otlp-insecure, --duration=inf, --rate=0.6, --service=checkout, --child-spans=2, --span-duration=900ms, --status-code=Error]
+  payments-traffic:
+    <<: *traffic
+    command: [traces, --otlp-endpoint=lgtm:4317, --otlp-insecure, --duration=inf, --rate=4, --service=payments, --child-spans=1, --span-duration=120ms, --status-code=Ok]
+  catalog-traffic:
+    <<: *traffic
+    command: [traces, --otlp-endpoint=lgtm:4317, --otlp-insecure, --duration=inf, --rate=12, --service=catalog, --span-duration=15ms, --status-code=Ok]
+  checkout-logs:
+    <<: *traffic
+    command: [logs, --otlp-endpoint=lgtm:4317, --otlp-insecure, --duration=inf, --rate=3, --service=checkout, --severity-text=Info, --severity-number=9, '--body=INFO order placed']
+  checkout-error-logs:
+    <<: *traffic
+    command: [logs, --otlp-endpoint=lgtm:4317, --otlp-insecure, --duration=inf, --rate=0.5, --service=checkout, --severity-text=Error, --severity-number=17, '--body=ERROR payment provider timeout after 900ms']
+  payments-logs:
+    <<: *traffic
+    command: [logs, --otlp-endpoint=lgtm:4317, --otlp-insecure, --duration=inf, --rate=2, --service=payments, --severity-text=Info, --severity-number=9, '--body=INFO charge captured']

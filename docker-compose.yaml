@@ -1,0 +1,27 @@
+services:
+  grafana:
+    extends:
+      file: .config/docker-compose-base.yaml
+      service: grafana
+    build:
+      args:
+        # Open-source Grafana, not Enterprise: this project targets Grafana OSS.
+        grafana_image: ${GRAFANA_IMAGE:-grafana}
+        grafana_version: ${GRAFANA_VERSION:-13.2.4}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      GF_PLUGINS_PREINSTALL_SYNC: grafana-llm-app,quickwit-quickwit-datasource
+      # Optional image renderer: enables PNG previews of dashboard panels in assistant answers.
+      # Without it the assistant falls back to live in-browser chart previews.
+      GF_RENDERING_SERVER_URL: http://renderer:8081/render
+      GF_RENDERING_CALLBACK_URL: http://grafana:3000/
+      GF_RENDERING_RENDERER_TOKEN: ${RENDERER_TOKEN:-dev-renderer-token}
+    depends_on:
+      - renderer
+
+  renderer:
+    image: grafana/grafana-image-renderer:v5.12.7
+    environment:
+      AUTH_TOKEN: ${RENDERER_TOKEN:-dev-renderer-token}

@@ -1,0 +1,17 @@
+apiVersion: 1
+
+# Dev-only: configures grafana-llm-app against any OpenAI-compatible endpoint.
+# Values come from .env (see .env.example); nothing secret is committed.
+apps:
+  - type: grafana-llm-app
+    jsonData:
+      provider: custom
+      openAI:
+        url: $LLM_API_URL
+      models:
+        default: base
+        mapping:
+          base: $LLM_MODEL_BASE
+          large: $LLM_MODEL_LARGE
+    secureJsonData:
+      openAIKey: $LLM_API_KEY

@@ -1,0 +1,6 @@
+apiVersion: 1
+
+apps:
+  - type: 'agarwalvivek29-lookout-app'
+    org_id: 1
+    disabled: false
