@@ -108,4 +108,6 @@ Explore links still get live charts.
 ## Links
 
 - Source and issues: https://github.com/agarwalvivek29/grafana-lookout
+- Roadmap: https://github.com/agarwalvivek29/grafana-lookout/blob/main/ROADMAP.md
+- Report a vulnerability: https://github.com/agarwalvivek29/grafana-lookout/blob/main/SECURITY.md
 - License: Apache 2.0

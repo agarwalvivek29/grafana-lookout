@@ -7,7 +7,10 @@ import grafanaConfig, { type Env } from './.config/webpack/webpack.config';
 const config = async (env: Env): Promise<Configuration> => {
   const base = await grafanaConfig(env);
   const externals = Array.isArray(base.externals) ? base.externals : [base.externals];
-  return merge({ ...base, externals: [] }, { externals: [...externals, 'react-dom/client'] as Configuration['externals'] });
+  return merge(
+    { ...base, externals: [] },
+    { externals: [...externals, 'react-dom/client'] as Configuration['externals'] }
+  );
 };
 
 export default config;

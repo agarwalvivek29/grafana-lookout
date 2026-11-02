@@ -1,5 +1,10 @@
 # Lookout
 
+[![CI](https://github.com/agarwalvivek29/grafana-lookout/actions/workflows/ci.yml/badge.svg)](https://github.com/agarwalvivek29/grafana-lookout/actions/workflows/ci.yml)
+[![Security](https://github.com/agarwalvivek29/grafana-lookout/actions/workflows/security.yml/badge.svg)](https://github.com/agarwalvivek29/grafana-lookout/actions/workflows/security.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/agarwalvivek29/grafana-lookout/badge)](https://scorecard.dev/viewer/?uri=github.com/agarwalvivek29/grafana-lookout)
+[![License](https://img.shields.io/github/license/agarwalvivek29/grafana-lookout)](LICENSE)
+
 An open-source AI assistant for Grafana. Ask about your metrics, logs, traces and dashboards in plain
 language, and get a short answer with links you can check: the dashboard panel that shows it, or an
 Explore query.
@@ -31,11 +36,11 @@ a local Ollama, or your own gateway), reached through the open-source
 - A model that supports tool calling, behind an OpenAI-compatible API.
 - At least one supported data source:
 
-| Signal  | Data sources                                                                     |
-| ------- | -------------------------------------------------------------------------------- |
-| Metrics | Prometheus data source type: Prometheus, Grafana Mimir, VictoriaMetrics, Thanos   |
-| Logs    | Loki, Quickwit                                                                    |
-| Traces  | Tempo                                                                             |
+| Signal  | Data sources                                                                    |
+| ------- | ------------------------------------------------------------------------------- |
+| Metrics | Prometheus data source type: Prometheus, Grafana Mimir, VictoriaMetrics, Thanos |
+| Logs    | Loki, Quickwit                                                                  |
+| Traces  | Tempo                                                                           |
 
 Dashboards of any data source can be found, explained and linked.
 
@@ -108,7 +113,9 @@ Explore links still get live charts.
 ## Links
 
 - Source and issues: https://github.com/agarwalvivek29/grafana-lookout
-- License: Apache 2.0
+- [Roadmap](ROADMAP.md): what is coming next
+- [Security policy](SECURITY.md): how to report a vulnerability
+- License: [Apache 2.0](LICENSE)
 
 ## Try it locally
 
@@ -136,5 +143,9 @@ Code map:
 - `src/components/AppConfig/`: the setup page.
 - `src/module.tsx`: entry points (dashboard sidebar, panel menu, command palette).
 
-Contributions are welcome: open an issue first for larger changes. Adapters for more data sources
-(Elasticsearch/OpenSearch logs, Jaeger traces) are a good place to start.
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the rules every change must
+follow, and the DCO sign-off. Adapters for more data sources (Elasticsearch/OpenSearch logs, VictoriaLogs,
+Jaeger traces) are a good place to start; see the [roadmap](ROADMAP.md). Everyone taking part follows the
+[Code of Conduct](CODE_OF_CONDUCT.md).

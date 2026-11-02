@@ -1,9 +1,7 @@
 {
   "uid": "lookout-demo",
   "title": "Demo services",
-  "tags": [
-    "quickstart"
-  ],
+  "tags": ["quickstart"],
   "schemaVersion": 41,
   "time": {
     "from": "now-30m",

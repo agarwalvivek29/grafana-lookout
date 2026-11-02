@@ -1,0 +1,56 @@
+name: Bug report
+description: Something in Lookout does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. For security problems, do not use this form; see SECURITY.md.
+        Remove API keys, internal hostnames and private data from anything you paste.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Include the question you asked if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a dashboard that uses ...
+        2. Click "Ask Lookout AI" and ask ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: lookout
+    attributes:
+      label: Lookout version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: grafana
+    attributes:
+      label: Grafana version and edition
+      placeholder: 13.2.4 OSS
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model provider and model
+      placeholder: OpenRouter, anthropic/claude-sonnet-4.5
+  - type: input
+    id: datasources
+    attributes:
+      label: Data sources involved
+      placeholder: Prometheus 3.x, Loki 3.x, Tempo 2.x
+  - type: textarea
+    id: logs
+    attributes:
+      label: Tool steps, browser console or Grafana logs
+      description: In the answer, open "Ran N steps" and click Details to see the tool calls.
+      render: text
