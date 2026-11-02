@@ -3,6 +3,7 @@ import { AppPlugin, PluginExtensionPanelContext, PluginExtensionPoints } from '@
 import { LoadingPlaceholder } from '@grafana/ui';
 import type { AppConfigProps } from './components/AppConfig/AppConfig';
 import type { ChatContext } from './chat/store';
+import { isSafeVariableName, toRecord, urlVariables } from './chat/vars';
 
 const App = lazy(() => import('./components/App/App'));
 const LazyAppConfig = lazy(() => import('./components/AppConfig/AppConfig'));
@@ -14,18 +15,20 @@ const AppConfig = (props: AppConfigProps) => (
 );
 
 function panelContext(ctx: PluginExtensionPanelContext | undefined): ChatContext {
-  const vars: Record<string, string> = {};
+  const scoped = new Map<string, string>();
   for (const [k, v] of Object.entries(ctx?.scopedVars ?? {})) {
-    if (!k.startsWith('__') && v && typeof v.value !== 'object') {
-      vars[k] = String(v.value);
+    if (!k.startsWith('__') && isSafeVariableName(k) && v && typeof v.value !== 'object') {
+      scoped.set(k, String(v.value));
     }
   }
   // Dashboard variables are also in the URL (var-*); include them so answers keep the same env/service.
-  for (const [k, v] of new URLSearchParams(window.location.search)) {
-    if (k.startsWith('var-') && !vars[k.slice(4)]) {
-      vars[k.slice(4)] = v;
+  const fromUrl = urlVariables(window.location.search);
+  for (const [k, v] of fromUrl) {
+    if (!scoped.has(k)) {
+      scoped.set(k, v);
     }
   }
+  const vars = toRecord(scoped);
   return {
     dashboard_uid: ctx?.dashboard?.uid,
     dashboard_title: ctx?.dashboard?.title,
@@ -43,12 +46,7 @@ function dashboardContextFromUrl(): ChatContext | null {
     return null;
   }
   const params = new URLSearchParams(window.location.search);
-  const vars: Record<string, string> = {};
-  for (const [k, v] of params) {
-    if (k.startsWith('var-')) {
-      vars[k.slice(4)] = v;
-    }
-  }
+  const vars = toRecord(urlVariables(window.location.search));
   const title = document.title.replace(/ - Dashboards - Grafana$/, '').replace(/ - Grafana$/, '');
   return {
     dashboard_uid: m[1],

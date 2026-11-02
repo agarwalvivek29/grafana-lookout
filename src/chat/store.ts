@@ -1,6 +1,7 @@
 // Module-scope conversation store (R3/D5): lives outside React so it survives page navigation
 // and drawer close/reopen. Persistence to plugin user storage comes later (M1).
 import { useSyncExternalStore } from 'react';
+import { toRecord, urlVariables } from './vars';
 import { llm } from '@grafana/llm';
 import { runAgent, AgentStep } from '../agent/agent';
 
@@ -77,13 +78,7 @@ export function readLiveContext(prev: ChatContext | null): ChatContext | null {
     return prev;
   }
   const params = new URLSearchParams(window.location.search);
-  const variables: Record<string, string> = {};
-  for (const [k, v] of params) {
-    if (k.startsWith('var-')) {
-      const name = k.slice(4);
-      variables[name] = variables[name] ? `${variables[name]},${v}` : v;
-    }
-  }
+  const variables = toRecord(urlVariables(window.location.search));
   const sameDashboard = prev?.dashboard_uid === m[1];
   const title = document.title.replace(/ - Dashboards - Grafana$/, '').replace(/ - Grafana$/, '');
   return {
