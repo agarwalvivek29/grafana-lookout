@@ -1,0 +1,89 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "app",
+  "name": "Lookout",
+  "id": "agarwalvivek29-lookout-app",
+  "backend": true,
+  "executable": "gpx_lookout",
+  "info": {
+    "keywords": ["app", "ai", "assistant", "llm", "observability", "prometheus", "loki", "tempo", "quickwit"],
+    "description": "Open-source AI assistant for Grafana: ask about your metrics, logs, traces and dashboards in plain language, with links you can check.",
+    "author": {
+      "name": "Vivek Agarwal",
+      "url": "https://github.com/agarwalvivek29"
+    },
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "screenshots": [],
+    "version": "%VERSION%",
+    "updated": "%TODAY%",
+    "links": [
+      {
+        "name": "GitHub",
+        "url": "https://github.com/agarwalvivek29/grafana-lookout"
+      },
+      {
+        "name": "Report an issue",
+        "url": "https://github.com/agarwalvivek29/grafana-lookout/issues"
+      },
+      {
+        "name": "License",
+        "url": "https://github.com/agarwalvivek29/grafana-lookout/blob/main/LICENSE"
+      }
+    ]
+  },
+  "includes": [
+    {
+      "type": "page",
+      "name": "Chat",
+      "path": "/a/%PLUGIN_ID%/chat",
+      "addToNav": true,
+      "defaultNav": true
+    },
+    {
+      "type": "page",
+      "icon": "cog",
+      "name": "Setup",
+      "path": "/plugins/%PLUGIN_ID%",
+      "role": "Admin",
+      "addToNav": true
+    }
+  ],
+  "dependencies": {
+    "grafanaDependency": ">=13.2.0",
+    "plugins": [
+      {
+        "id": "grafana-llm-app",
+        "type": "app",
+        "name": "LLM"
+      }
+    ]
+  },
+  "preload": true,
+  "extensions": {
+    "addedLinks": [
+      {
+        "targets": ["grafana/dashboard/sidebar/v1"],
+        "title": "Ask AI",
+        "description": "Open the assistant next to this dashboard"
+      },
+      {
+        "targets": ["grafana/dashboard/panel/menu"],
+        "title": "Ask AI",
+        "description": "Ask the assistant about this panel"
+      },
+      {
+        "targets": ["grafana/dashboard/panel/menu"],
+        "title": "Explain with AI",
+        "description": "Explain what this panel shows and whether the current values look normal"
+      },
+      {
+        "targets": ["grafana/commandpalette/action"],
+        "title": "Ask AI…",
+        "description": "Open the AI assistant"
+      }
+    ]
+  }
+}

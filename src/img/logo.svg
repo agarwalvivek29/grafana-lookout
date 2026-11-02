@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Lookout: a lens over a rising line -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1F2A44"/>
+  <path d="M10 46 L20 38 L28 42 L38 26 L46 32 L54 18" stroke="#5B9CF6" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="38" cy="26" r="11" stroke="#FFB357" stroke-width="4" fill="none"/>
+  <path d="M46 34 L54 42" stroke="#FFB357" stroke-width="5" stroke-linecap="round"/>
+  <path d="M15 14 l1.6 3.4 3.4 1.6 -3.4 1.6 -1.6 3.4 -1.6 -3.4 -3.4 -1.6 3.4 -1.6z" fill="#FFFFFF"/>
+</svg>
