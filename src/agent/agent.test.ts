@@ -134,3 +134,79 @@ describe('logs_top_values on Loki with a field that is not a label', () => {
     expect(out.note).toMatch(/not a label/);
   });
 });
+
+describe('explore_link', () => {
+  test('warns when the query has no data in the linked range', async () => {
+    post.mockResolvedValue({ results: { A: { frames: [] } } });
+    const out = JSON.parse(
+      await runTool('explore_link', JSON.stringify({ datasource_uid: 'prom', expr: 'up{job="x"}', from: 'now-30m' }))
+    );
+    expect(post.mock.calls[0][1].queries[0].expr).toBe('max_over_time((up{job="x"})[30m:1m])');
+    expect(out.url).toMatch(/^\/explore\?/);
+    expect(out.warning).toMatch(/no data/);
+  });
+
+  test('links normally when the query has data', async () => {
+    post.mockResolvedValue({
+      results: {
+        A: {
+          frames: [
+            { schema: { fields: [{ name: 'Time' }, { name: 'Value', labels: {} }] }, data: { values: [[1], [3]] } },
+          ],
+        },
+      },
+    });
+    const out = JSON.parse(await runTool('explore_link', JSON.stringify({ datasource_uid: 'prom', expr: 'up' })));
+    expect(out.warning).toBeUndefined();
+    expect(out.series_in_range).toBe(1);
+  });
+});
+
+describe('stripPreamble', () => {
+  const { stripPreamble } = jest.requireActual('./agent');
+  test.each([
+    ['Perfect! Now I have all the information needed to answer your question.\n\nNo, it is fine.', 'No, it is fine.'],
+    ['Perfect! Now I can provide a comprehensive explanation.\n\n## Panel', '## Panel'],
+    ['Great! The checkout service is failing.', 'The checkout service is failing.'],
+    ['The checkout service is failing.', 'The checkout service is failing.'],
+    ['I have no data for that service.', 'I have no data for that service.'],
+  ])('%s', (input, expected) => {
+    expect(stripPreamble(input)).toBe(expected);
+  });
+});
+
+describe('prom_range_summary', () => {
+  test('summarises how a series changed and when it peaked', async () => {
+    const t0 = Date.parse('2026-01-01T10:00:00Z');
+    const times = Array.from({ length: 30 }, (_, i) => t0 + i * 60_000);
+    const vals = times.map((_, i) => (i >= 10 && i < 16 ? 1.0 : 0.25));
+    post.mockResolvedValue({
+      results: {
+        A: {
+          frames: [
+            {
+              schema: { fields: [{ name: 'Time' }, { name: 'Value', labels: { span_name: 'POST /orders' } }] },
+              data: { values: [times, vals] },
+            },
+          ],
+        },
+      },
+    });
+    const out = JSON.parse(
+      await runTool(
+        'prom_range_summary',
+        JSON.stringify({ datasource_uid: 'prom', expr: 'rate(x[$__rate_interval])', from: 'now-30m', to: 'now' })
+      )
+    );
+    expect(post.mock.calls[0][1].queries[0].expr).toBe('rate(x[2m])');
+    const s = out.series[0];
+    expect(s).toMatchObject({ first: 0.25, last: 0.25, min: 0.25, max: 1 });
+    expect(s.max_at).toMatch(/^\d\d:10$/);
+    expect(s.samples).toHaveLength(12);
+    expect(s.elevated_episodes).toHaveLength(1);
+    expect(s.elevated_episodes[0].from).toMatch(/:10$/);
+    expect(s.elevated_episodes[0].to).toMatch(/:15$/);
+    expect(s.elevated_pct_of_time).toBe(20);
+    expect(out.times_in).toBeTruthy();
+  });
+});

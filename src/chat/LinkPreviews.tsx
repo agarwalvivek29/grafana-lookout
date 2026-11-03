@@ -79,6 +79,23 @@ function parsePreviews(markdown: string): Preview[] {
   return out;
 }
 
+/** A failing preview must never break the answer: show a short note instead. */
+class PreviewBoundary extends React.Component<{ children: React.ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    return this.state.failed ? (
+      <Text color="secondary" variant="bodySmall">
+        Preview unavailable
+      </Text>
+    ) : (
+      this.props.children
+    );
+  }
+}
+
 function PromPreview({ p }: { p: Extract<Preview, { kind: 'prom' }> }) {
   const [data, setData] = useState<PanelData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -110,6 +127,10 @@ function PromPreview({ p }: { p: Extract<Preview, { kind: 'prom' }> }) {
           return;
         }
         const series = (r?.frames ?? []).slice(0, 10).map((f) => dataFrameFromJSON(f));
+        if (!series.some((f) => f.length > 0)) {
+          setError('no data in this time range');
+          return;
+        }
         setData({ state: LoadingState.Done, series, timeRange });
       })
       .catch((e) => !cancelled && setError(String(e?.data?.message ?? e)));
@@ -186,7 +207,9 @@ export function LinkPreviews({ markdown }: { markdown: string }) {
           title={`Open: ${p.label}`}
           aria-label={`Open ${p.label}`}
         >
-          <div className={s.frame}>{p.kind === 'panel' ? <PanelImage p={p} /> : <PromPreview p={p} />}</div>
+          <div className={s.frame}>
+            <PreviewBoundary>{p.kind === 'panel' ? <PanelImage p={p} /> : <PromPreview p={p} />}</PreviewBoundary>
+          </div>
           <div className={s.caption}>
             <Icon name={p.kind === 'panel' ? 'apps' : 'compass'} size="sm" />
             <span>{p.label}</span>

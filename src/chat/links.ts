@@ -14,7 +14,8 @@ export function rememberToolLink(url: unknown) {
 
 /**
  * The in-app path (without the sub-path) for a link in model output, or null when it does not point into this
- * Grafana. A link to another host is accepted only when its path and query are exactly a link a tool returned.
+ * Grafana. A link to another host is accepted only when it is a link a tool returned or a Grafana page path,
+ * and then it is rewritten to this Grafana.
  */
 export function appPath(href: string): string | null {
   let url: URL;
@@ -34,8 +35,16 @@ export function appPath(href: string): string | null {
     }
     return path + url.hash;
   }
-  return toolLinks.has(path) ? path : null;
+  // The model sometimes writes an in-app link with a made-up host ("https://grafana.url/d/..."). Dropping the
+  // host keeps the click inside this Grafana, exactly like a relative link, so it is accepted for Grafana's own
+  // pages. Anything else on another host stays blocked.
+  if (toolLinks.has(path) || IN_APP.test(url.pathname)) {
+    return path + url.hash;
+  }
+  return null;
 }
+
+const IN_APP = /^\/(d|d-solo|explore|a|dashboards|alerting)(\/|$)/;
 
 /** A browser URL for an in-app path. */
 export function withSubUrl(path: string): string {

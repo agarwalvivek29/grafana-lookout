@@ -14,7 +14,84 @@ service in between: the model is whatever OpenAI-compatible endpoint you choose 
 a local Ollama, or your own gateway), reached through the open-source
 [Grafana LLM plugin](https://grafana.com/grafana/plugins/grafana-llm-app/).
 
-![Lookout answering a question next to a dashboard](https://raw.githubusercontent.com/agarwalvivek29/grafana-lookout/main/src/img/screenshot-chat.png)
+![Lookout finding why checkout is failing: payments times out calling the payment provider](docs/media/hero.gif)
+
+_An on-call question on the [quickstart](examples/quickstart) demo shop. Lookout reads the dashboard, runs a
+health check, opens failing traces and logs, and answers with what it measured, the likely cause, and links
+you can check. Every query runs as you, read-only._
+
+## See it in action
+
+All examples below are real, unedited answers from the [quickstart](examples/quickstart) stack: a demo shop
+(`frontend`, `catalog`, `checkout`, `payments`) whose payment provider has a 6-minute outage every 15 minutes. You can run
+the same questions yourself in two minutes.
+
+### Find the cause of an incident
+
+> Checkout is failing for customers. What's going on?
+
+Lookout checks error rates per endpoint, compares with earlier, opens real failing traces to read the exception
+(`PaymentProviderTimeout`), and follows the failure from the payment provider through `payments` and
+`checkout` to the customer. It ends with a picture of the matching dashboard panel and a live Explore chart.
+
+![Answer with measured error rates, the likely cause and link previews](docs/media/hero-end.png)
+
+### Tell noise from real failures
+
+> Catalog keeps recording errors on SELECT products. Is that a real problem for customers?
+
+Not every error is an outage. Lookout reads the sampled exceptions (`NoResultException: No product with id
+158`), sees that customer-facing requests have a 0% error rate, and says these are expected "not found"
+lookups. It doesn't sound the alarm.
+
+![Lookout explaining that database errors are expected not-found lookups](docs/media/noise.png)
+
+### Explain a panel
+
+Panel menu → **Extensions → Explain with AI**. Lookout reads the panel's query, looks at the whole time range,
+and says what changed and when: three slow episodes on the checkout path, and which endpoints stayed flat.
+
+![Explain with AI on the p95 latency by endpoint panel](docs/media/explain.png)
+
+### Find the right dashboard
+
+> Is there a dashboard for payment provider latency? Link me to the right panel.
+
+Lookout searches your dashboards, reads their panels, and links the exact panel, with a picture of it under
+the answer.
+
+![Lookout linking the payment provider latency panel on another dashboard](docs/media/find.png)
+
+### Write a query for you
+
+> Write me a PromQL query for the p95 latency of each checkout endpoint over the last 30 minutes, and open it in Explore.
+
+It finds the right metric and labels, writes the query, checks that it returns data, and previews the result.
+
+![A generated PromQL query with a live chart preview](docs/media/query.png)
+
+### Read the logs
+
+> How many errors did payments log in the last 15 minutes, which services logged errors too, and what do the payment errors have in common?
+
+Lookout counts and groups log lines in Loki (Quickwit works too), and connects the 223 payment timeouts to
+the 223 failed orders in `checkout`.
+
+![Lookout summarising error logs across services](docs/media/logs.png)
+
+### Follow the dashboard you're on
+
+Change a dashboard variable and keep talking. Lookout notices ("Dashboard changed: service: checkout →
+catalog") and answers "And this one?" for what's on screen now.
+
+![Lookout following a change of the service variable](docs/media/context.png)
+
+### Set up in one page
+
+Pick a provider, paste a key, click **Save and test**. The setup page checks that the model can call tools and
+lists the data sources Lookout can use.
+
+![The Lookout setup page](docs/media/setup.png)
 
 ## What it does
 
@@ -119,8 +196,8 @@ Explore links still get live charts.
 
 ## Try it locally
 
-[`examples/quickstart`](examples/quickstart) starts Grafana with Prometheus, Loki and Tempo and three demo
-services sending traffic, so you can try Lookout without your own data. See its README.
+[`examples/quickstart`](examples/quickstart) starts Grafana with Prometheus, Loki, Tempo, the image renderer
+and the demo shop used in the examples above, so you can try Lookout without your own data. See its README.
 
 ## Develop
 

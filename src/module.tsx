@@ -102,7 +102,7 @@ export const plugin = new AppPlugin<{}>()
     onClick: (_e, helpers) => {
       openPanel(
         panelContext(helpers.context),
-        'Explain this panel: what it measures, what the current values say compared with earlier in the time range, and what to check next.'
+        'Explain this panel: what it measures, how the values changed over the dashboard time range (peaks, steps, recoveries and when they happened), and what to check next.'
       );
     },
   })

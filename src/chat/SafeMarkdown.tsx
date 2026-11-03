@@ -7,8 +7,16 @@ import { GrafanaTheme2, renderMarkdown } from '@grafana/data';
 import { useStyles2 } from '@grafana/ui';
 import { appPath, withSubUrl } from './links';
 
+/** "~250ms" means "about 250 ms", not strikethrough: escape single tildes outside code. */
+export function escapeApproxTildes(markdown: string): string {
+  return markdown
+    .split(/(```[\s\S]*?```|`[^`\n]*`)/)
+    .map((part, i) => (i % 2 === 1 ? part : part.replace(/(^|[^~\\])~(?!~)/g, '$1\\~')))
+    .join('');
+}
+
 export function safeHtml(markdown: string): string {
-  const html = renderMarkdown(markdown);
+  const html = renderMarkdown(escapeApproxTildes(markdown));
   const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
   const root = doc.body.firstElementChild as HTMLElement;
   root.querySelectorAll('img, iframe, object, embed, video, audio, form, script, style').forEach((el) => el.remove());

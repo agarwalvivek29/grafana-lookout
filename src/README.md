@@ -9,7 +9,10 @@ service in between: the model is whatever OpenAI-compatible endpoint you choose 
 a local Ollama, or your own gateway), reached through the open-source
 [Grafana LLM plugin](https://grafana.com/grafana/plugins/grafana-llm-app/).
 
-![Lookout answering a question next to a dashboard](https://raw.githubusercontent.com/agarwalvivek29/grafana-lookout/main/src/img/screenshot-chat.png)
+![Lookout finding why checkout is failing](https://raw.githubusercontent.com/agarwalvivek29/grafana-lookout/main/docs/media/hero.gif)
+
+More examples (explaining panels, finding dashboards, writing queries, reading logs):
+[see them on GitHub](https://github.com/agarwalvivek29/grafana-lookout#see-it-in-action).
 
 ## What it does
 

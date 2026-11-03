@@ -18,8 +18,16 @@
     },
     "screenshots": [
       {
-        "name": "Ask about a dashboard",
+        "name": "Find the cause of an incident",
         "path": "img/screenshot-chat.png"
+      },
+      {
+        "name": "Explain a panel",
+        "path": "img/screenshot-explain.png"
+      },
+      {
+        "name": "Setup",
+        "path": "img/screenshot-setup.png"
       }
     ],
     "version": "%VERSION%",
