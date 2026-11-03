@@ -1,6 +1,6 @@
 {
   "name": "grafana-lookout",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "scripts": {
     "build": "webpack -c ./webpack.config.ts --env production",
     "dev": "webpack -w -c ./webpack.config.ts --env development",

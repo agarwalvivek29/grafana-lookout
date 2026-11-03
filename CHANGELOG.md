@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-03)
 
 - Build and edit dashboards from chat: create a dashboard, add, change or remove panels, add variables, and set
   the time range. Changes are shown as a proposal with live previews and saved only when you click Apply; Undo
