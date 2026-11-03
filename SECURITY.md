@@ -46,7 +46,9 @@ Out of scope:
 
 ## How Lookout is built to be safe
 
-- Every tool runs in the browser with the signed-in user's Grafana permissions. Tools only read.
+- Every tool runs in the browser with the signed-in user's Grafana permissions. Tools only read. Dashboard
+  changes are proposals: they are saved only when the user clicks Apply or Create on the proposal card, which the
+  model cannot do. Provisioned dashboards are saved as copies, and every save can be undone.
 - Tool results are treated as untrusted data. Model output is rendered as sanitized Markdown, images are
   removed, and only links into the same Grafana are clickable.
 - The model API key is stored encrypted by the Grafana LLM plugin and never reaches the browser.

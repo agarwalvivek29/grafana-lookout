@@ -4,6 +4,7 @@ import { useSyncExternalStore } from 'react';
 import { toRecord, urlVariables } from './vars';
 import { llm } from '@grafana/llm';
 import { runAgent, AgentStep } from '../agent/agent';
+import { takeProposalNotes } from '../agent/dashboards';
 
 export interface ChatContext {
   dashboard_uid?: string;
@@ -83,7 +84,9 @@ export function readLiveContext(prev: ChatContext | null): ChatContext | null {
   const title = document.title.replace(/ - Dashboards - Grafana$/, '').replace(/ - Grafana$/, '');
   return {
     dashboard_uid: m[1],
-    dashboard_title: title || prev?.dashboard_title,
+    // While a dashboard (re)loads the page title is briefly the generic "Dashboards".
+    dashboard_title:
+      (title && title !== 'Dashboards' ? title : undefined) ?? (sameDashboard ? prev?.dashboard_title : undefined),
     panel_key: sameDashboard ? prev?.panel_key : undefined,
     panel_title: sameDashboard ? prev?.panel_title : undefined,
     time_range: {
@@ -171,8 +174,10 @@ export async function ask(question: string) {
   const turn: Turn = { id, question, steps: [], liveText: '', startedAt: Date.now(), contextChanges: changes };
   set({ turns: [...state.turns, turn], running: true });
   try {
+    const notes = takeProposalNotes();
+    const prompt = withContext(question, ctx, changes);
     history = await runAgent(
-      withContext(question, ctx, changes),
+      notes.length ? `[Since the last answer: ${notes.join(' ')}]\n\n${prompt}` : prompt,
       (step) => {
         if (step.kind === 'answer') {
           updateTurn(id, { answer: step.text });

@@ -4,11 +4,14 @@
 import { llm } from '@grafana/llm';
 import { getBackendSrv } from '@grafana/runtime';
 import { rememberToolLink } from '../chat/links';
+import { NAMESPACE, PROPOSE_TOOL, proposeDashboardChange } from './dashboards';
+import { layoutNotes, panelPlaces } from './dashboardOps';
+export { layoutNotes, panelPlaces };
 
 type ChatMessage = llm.Message;
 
 export interface AgentStep {
-  kind: 'model' | 'tool' | 'answer' | 'error' | 'stats';
+  kind: 'model' | 'tool' | 'answer' | 'error' | 'stats' | 'proposal';
   text: string;
 }
 
@@ -651,7 +654,7 @@ const DASH_TOOLS: llm.Tool[] = [
     },
   },
 ];
-TOOLS.push(...DASH_TOOLS);
+TOOLS.push(...DASH_TOOLS, PROPOSE_TOOL);
 
 type Json = Record<string, any>;
 
@@ -692,9 +695,10 @@ async function runDashTool(name: string, args: Json): Promise<string> {
   }
   if (name === 'get_dashboard') {
     const d = await getBackendSrv().get<Json>(
-      `/apis/dashboard.grafana.app/v2/namespaces/default/dashboards/${encodeURIComponent(String(args.uid))}`
+      `/apis/dashboard.grafana.app/v2/namespaces/${NAMESPACE()}/dashboards/${encodeURIComponent(String(args.uid))}`
     );
     const spec = d.spec ?? {};
+    const { places } = panelPlaces(spec.layout);
     const panels = Object.entries<Json>(spec.elements ?? {}).map(([key, el]) => {
       const s = el.spec ?? {};
       const queries = (s.data?.spec?.queries ?? []).map(queryText).filter(Boolean).slice(0, 3);
@@ -703,6 +707,9 @@ async function runDashTool(name: string, args: Json): Promise<string> {
         title: s.title,
         description: String(s.description ?? '').slice(0, 200),
         type: s.vizConfig?.group ?? s.vizConfig?.kind,
+        unit: s.vizConfig?.spec?.fieldConfig?.defaults?.unit,
+        datasource: s.data?.spec?.queries?.[0]?.spec?.query?.datasource?.name,
+        at: places[key],
         queries,
       };
     });
@@ -726,15 +733,17 @@ async function runDashTool(name: string, args: Json): Promise<string> {
       description: String(spec.description ?? '').slice(0, 300),
       layout: layoutOutline(spec.layout).slice(0, 40),
       variables,
+      layout_kind: spec.layout?.kind,
       panel_count: panels.length,
-      panels: panels.slice(0, 60),
+      panels: panels.slice(0, 80),
+      layout_notes: layoutNotes(spec),
     });
   }
   if (name === 'panel_link') {
     // Validate against the saved dashboard so we never hand out a link to a panel or variable that
     // doesn't exist (that renders as "Panel not found" in previews).
     const d = await getBackendSrv().get<Json>(
-      `/apis/dashboard.grafana.app/v2/namespaces/default/dashboards/${encodeURIComponent(String(args.uid))}`
+      `/apis/dashboard.grafana.app/v2/namespaces/${NAMESPACE()}/dashboards/${encodeURIComponent(String(args.uid))}`
     );
     const elements: Json = d.spec?.elements ?? {};
     const varNames = new Set<string>((d.spec?.variables ?? []).map((v: Json) => v.spec?.name));
@@ -1211,6 +1220,9 @@ export async function runTool(name: string, rawArgs: string): Promise<string> {
   if (TEMPO_TOOLS.some((t) => t.function.name === name)) {
     return runTempoTool(name, JSON.parse(rawArgs || '{}'));
   }
+  if (name === 'propose_dashboard_change') {
+    return proposeDashboardChange(JSON.parse(rawArgs || '{}'));
+  }
   if (DASH_TOOLS.some((t) => t.function.name === name)) {
     return runDashTool(name, JSON.parse(rawArgs || '{}'));
   }
@@ -1230,7 +1242,7 @@ export async function runTool(name: string, rawArgs: string): Promise<string> {
   throw new Error(`Unknown tool: ${name}`);
 }
 
-const MAX_STEPS = 12;
+const MAX_STEPS = 20;
 
 const SYSTEM_PROMPT =
   'You answer questions about this Grafana instance and its data. Use the tools to look things up; do not guess ' +
@@ -1266,7 +1278,23 @@ const SYSTEM_PROMPT =
   '6. Explaining away noise is not the end: after excluding expected errors, still list what remains, broken down ' +
   'per endpoint (SERVER spans by span_name, since a service-wide average hides one failing endpoint) and from error ' +
   'logs whose level_in_text is ERROR (group by message pattern with logs_top_values). Only say "nothing wrong" if ' +
-  'both checks come back clean.';
+  'both checks come back clean.\n' +
+  '8. To build or change a dashboard, use propose_dashboard_change; you cannot save anything yourself. First ' +
+  'discover real metric and label names, read the dashboard with get_dashboard when changing one, reuse its ' +
+  'variables and data source, and prefer few clear panels with units set. Take units from the metric: ' +
+  'histograms and durations from OpenTelemetry and span metrics (traces_spanmetrics_latency, *_seconds) are in ' +
+  'seconds (unit "s"); only use "ms" when the name says milliseconds. A ratio between 0 and 1 uses ' +
+  '"percentunit"; multiply by 100 only with "percent". Layout: the grid is 24 columns; put a strip of stat panels ' +
+  '(width 6, height 4) at the top, pair related time series at width 12, give tables and logs the full width, ' +
+  'keep heights equal within a line, and group panels into rows or tabs once a dashboard has more than about ' +
+  '12 panels. To optimize or rearrange a dashboard, read it with get_dashboard (panel positions and ' +
+  'layout_notes), then move_panel, resize and fix units in one proposal. For a dashboard about one service ' +
+  'at a time, make the service variable single-select (multi false, include_all false) and use label="$service"; ' +
+  'with a multi-select variable use label=~"$service". For error ratios write (sum(errors) or vector(0)) / ' +
+  'sum(total) so zero errors shows 0, not "No data". Trace lists are table panels with a TraceQL search; ' +
+  'TraceQL has no sort, so ask for slow traces with a duration filter such as { duration > 500ms }. A text panel (height 3) at the top of a ' +
+  'tab can explain what it shows. Nothing is saved by the tool: say "I prepared" (never ' +
+  '"created" or "saved") and that the card below has the button to save it.';
 
 function initialMessages(question: string): ChatMessage[] {
   return [
@@ -1282,7 +1310,9 @@ async function executeCalls(calls: llm.ToolCall[], messages: ChatMessage[], onSt
     try {
       result = await runTool(call.function.name, call.function.arguments);
     } catch (e) {
-      result = JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+      const err = e as { message?: string; status?: number; data?: { message?: string } };
+      const message = err?.data?.message ?? err?.message ?? (err?.status ? `HTTP ${err.status}` : String(e));
+      result = JSON.stringify({ error: message });
     }
     try {
       rememberToolLink(JSON.parse(result).url);
@@ -1290,6 +1320,16 @@ async function executeCalls(calls: llm.ToolCall[], messages: ChatMessage[], onSt
       // not JSON
     }
     onStep({ kind: 'tool', text: `${call.function.name} → ${result.slice(0, 300)}` });
+    if (call.function.name === 'propose_dashboard_change') {
+      try {
+        const id = JSON.parse(result).proposal_id;
+        if (id) {
+          onStep({ kind: 'proposal', text: id });
+        }
+      } catch {
+        // error result: no proposal
+      }
+    }
     messages.push({ role: 'tool', tool_call_id: call.id, content: result });
   }
 }
@@ -1453,6 +1493,10 @@ export function stepLabel(text: string): string {
       return `Searched dashboards for "${s('query') || s('tag')}"`;
     case 'get_dashboard':
       return `Read dashboard ${s('uid')}`;
+    case 'propose_dashboard_change':
+      return a.dashboard_uid
+        ? `Prepared a change to dashboard ${s('dashboard_uid')}`
+        : `Prepared dashboard "${s('title')}"`;
     default:
       return m[1];
   }

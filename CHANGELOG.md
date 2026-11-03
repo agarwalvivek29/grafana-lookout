@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Build and edit dashboards from chat: create a dashboard, add, change or remove panels, add variables, and set
+  the time range. Changes are shown as a proposal with live previews and saved only when you click Apply; Undo
+  restores the previous version. Works with dashboards stored in the classic and the v2 schema; provisioned and
+  Git Sync dashboards are saved as a copy. See `docs/design/dashboard-editing.md`.
+- Rearrange and optimize dashboards, and build dashboards with tabs and rows: move and resize panels, add tabs
+  and rows, data source, custom and text variables, threshold lines (SLOs), node graph panels, and tables merged
+  from several queries with named columns. `get_dashboard` now returns panel positions and layout notes, and the
+  proposal card shows a map of the new layout.
+- Queries are checked against Tempo too, and a query that uses `=` with a multi-value variable is caught before
+  it reaches the dashboard.
+- Dashboard API calls use the current organisation's namespace instead of always `default`.
+
 ## 0.1.0 (2026-11-03)
 
 First public version.

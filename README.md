@@ -18,7 +18,7 @@ a local Ollama, or your own gateway), reached through the open-source
 
 _An on-call question on the [quickstart](examples/quickstart) demo shop. Lookout reads the dashboard, runs a
 health check, opens failing traces and logs, and answers with what it measured, the likely cause, and links
-you can check. Every query runs as you, read-only._
+you can check. Every query runs as you._
 
 ## See it in action
 
@@ -70,6 +70,47 @@ It finds the right metric and labels, writes the query, checks that it returns d
 
 ![A generated PromQL query with a live chart preview](docs/media/query.png)
 
+### Build and edit dashboards
+
+> Build a dashboard for the checkout service: request rate, error rate as a percentage, p95 latency, and its recent error logs.
+
+Lookout finds the metrics and log labels, runs every query, and shows the dashboard as a proposal with live
+previews of each panel. Nothing is saved until you click **Create dashboard**.
+
+![Lookout building a checkout dashboard: proposal with live previews, Create dashboard, then the saved dashboard](docs/media/build.gif)
+
+On a dashboard you are viewing, ask for a change. The card lists every change with the query before and after,
+and previews the changed panels:
+
+> Add a p99 line to the P95 latency panel and rename it to "Latency", and add a stat panel with the current error rate next to it.
+
+![A proposed change to the open dashboard, with live previews and an Apply button](docs/media/edit.png)
+
+Click **Apply** and the dashboard reloads with the change; **Undo** restores the previous version. Provisioned
+and Git Sync dashboards are saved as a copy, since an in-place change would be overwritten. How it works:
+[design notes](docs/design/dashboard-editing.md).
+
+![The dashboard after Apply: the latency panel now shows p95 and p99](docs/media/edit-applied.png)
+
+### Rearrange and optimize a dashboard
+
+> This dashboard is a mess. Rearrange and optimize it: stats in a strip at the top, related charts side by side, logs full width, fix missing units and titles.
+
+Lookout reads where every panel sits and what is missing (units, titles, half-empty lines), then proposes the
+moves, sizes and fixes in one change. The card shows a map of the new layout with the moved panels highlighted.
+
+![Lookout rearranging a messy dashboard: stats on top, charts paired, units and titles fixed](docs/media/optimize.gif)
+
+### Build a dashboard with tabs
+
+> Build a "Service APM" dashboard with tabs, from span metrics, Loki logs and Tempo traces. Variables: service and a custom spanKind. Tabs: Summary (text header, 4 stats, throughput, error rate % with SLO lines at 1% and 5%, latency p50/p95/p99, latency heatmap), Endpoints, Errors, Traces, Dependencies.
+
+Tabs, rows, data source and custom variables, threshold lines, tables merged from several queries, and trace
+search tables all come from one request. Every query is run before you see the proposal; anything that returns
+no data is called out (here the service graph, because the demo has no service graph metrics).
+
+![Lookout building a five-tab Service APM dashboard and touring the tabs](docs/media/tabs.gif)
+
 ### Read the logs
 
 > How many errors did payments log in the last 15 minutes, which services logged errors too, and what do the payment errors have in common?
@@ -103,6 +144,9 @@ lists the data sources Lookout can use.
   panel (with the Grafana Image Renderer) or a live chart.
 - **Finds things.** "Where is the latency dashboard for checkout?", "Which services have the most
   errors right now?", "Show me the slowest traces in the last hour".
+- **Builds and edits dashboards.** "Build a dashboard for checkout", "add a p99 line to this panel", "make
+  the error panel a percentage", "rearrange this dashboard", "build a dashboard with tabs for each signal". You see the change with live previews first; nothing is saved until you
+  click Apply, and Undo puts it back. Provisioned dashboards get a copy instead of an in-place change.
 - **Careful by default.** Compares with yesterday before calling something high, reads real error
   traces before calling them failures, and says what is measured and what is a guess.
 
@@ -179,7 +223,8 @@ Explore links still get live charts.
 ## Security and privacy
 
 - Every tool runs in the browser as the signed-in user, through Grafana's own APIs. Lookout sees only
-  what that user can already see, and it only reads; it does not change dashboards or data sources.
+  what that user can already see. The tools only read: a dashboard change is shown as a proposal, and it is
+  saved only when you click its button. The model cannot save anything, and every save can be undone.
 - What leaves your network: the question, the dashboard context, and the tool results needed to answer,
   sent to the model provider you configured. Use a local model (for example Ollama) to keep everything
   inside.
@@ -216,6 +261,8 @@ Checks: `npm run typecheck`, `npm run lint`, `npm run test:ci`, `npm run e2e`.
 Code map:
 
 - `src/agent/agent.ts`: the agent loop and its read-only tools (metrics, logs, traces, dashboards).
+- `src/agent/dashboardOps.ts`, `src/agent/dashboards.ts`, `src/chat/ProposalCard.tsx`: dashboard building and
+  editing (proposals, previews, Apply and Undo).
 - `src/chat/`: chat UI, side panel, safe Markdown, link previews, conversation store.
 - `src/components/AppConfig/`: the setup page.
 - `src/module.tsx`: entry points (dashboard sidebar, panel menu, command palette).
