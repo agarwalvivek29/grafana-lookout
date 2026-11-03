@@ -1,5 +1,10 @@
 import {
   applyV1,
+  emptyV2Dashboard,
+  exactMatchOnMultiValue,
+  multiValueVariables,
+  needsV2Layout,
+  normalizeGrid,
   applyV2,
   emptyV1Dashboard,
   OpError,
@@ -324,7 +329,45 @@ describe('variables', () => {
     const vals = { service: '$__all', env: 'prod', multi: undefined };
     expect(
       substituteVariables('rate(x{service=~"$service", env="${env}", m=~"[[multi]]"}[$__rate_interval]) $other', vals)
-    ).toBe('rate(x{service=~".*", env="prod", m=~".*"}[2m]) $other');
+    ).toBe('rate(x{service=~".+", env="prod", m=~".+"}[2m]) $other');
+  });
+});
+
+describe('exact matches on multi-value variables', () => {
+  it('checks label="$var" with any value when the variable has no single value', () => {
+    expect(substituteVariables('up{service="$service", env="${env}"}', { service: '$__all', env: undefined })).toBe(
+      'up{service=~".+", env=~".+"}'
+    );
+    expect(substituteVariables('up{service="$service"}', { service: 'checkout' })).toBe('up{service="checkout"}');
+  });
+  it('flags panels that compare a multi-value variable with =', () => {
+    const spec = {
+      templating: {
+        list: [
+          { name: 'service', multi: true },
+          { name: 'env', multi: false },
+        ],
+      },
+    };
+    const views = [
+      {
+        key: 'a',
+        title: 'Bad',
+        type: 'stat',
+        queries: [{ dsUid: 'p', dsType: 'prometheus', expr: 'up{service="$service"}' }],
+        fieldConfig: {},
+        options: {},
+      },
+      {
+        key: 'b',
+        title: 'Good',
+        type: 'stat',
+        queries: [{ dsUid: 'p', dsType: 'prometheus', expr: 'up{service=~"$service", env="$env"}' }],
+        fieldConfig: {},
+        options: {},
+      },
+    ];
+    expect(exactMatchOnMultiValue(views, multiValueVariables(spec, 'v1'))).toEqual(['"Bad" uses ="$service"']);
   });
 });
 
@@ -367,6 +410,256 @@ describe('parseOperations', () => {
   it('rejects unknown operations and too many', () => {
     expect(() => parseOperations([{ op: 'delete_dashboard' }])).toThrow(/Unknown operation/);
     expect(() => parseOperations([])).toThrow();
-    expect(() => parseOperations(new Array(31).fill({ op: 'set_title', title: 'x' }))).toThrow(/At most/);
+    expect(() => parseOperations(new Array(81).fill({ op: 'set_title', title: 'x' }))).toThrow(/At most/);
+  });
+});
+
+describe('layout: tabs, rows and moving panels (v2)', () => {
+  const panel = (title: string, extra: Record<string, unknown> = {}) => ({
+    title,
+    datasource_uid: 'prom',
+    queries: [{ expr: 'up' }],
+    ...extra,
+  });
+  const gridOf = (spec: any, tab: number) => spec.layout.spec.tabs[tab].spec.layout.spec.items;
+
+  it('builds a tabbed dashboard with a stat strip on top', () => {
+    const r = applyV2(
+      emptyV2Dashboard('APM'),
+      parseOperations([
+        { op: 'add_tab', title: 'Summary' },
+        { op: 'add_tab', title: 'Errors' },
+        { op: 'add_panel', tab: 'Summary', panel: panel('Throughput', { width: 12 }) },
+        { op: 'add_panel', tab: 'Summary', x: 0, y: 0, panel: panel('Rate', { type: 'stat', width: 6, height: 4 }) },
+        { op: 'add_panel', tab: 'Summary', x: 6, y: 0, panel: panel('Errors', { type: 'stat', width: 6, height: 4 }) },
+        { op: 'add_panel', tab: 'Errors', panel: panel('Error logs', { type: 'logs', datasource_uid: 'logs' }) },
+      ]),
+      ds
+    );
+    expect(r.spec.layout.kind).toBe('TabsLayout');
+    expect(r.spec.layout.spec.tabs.map((t: any) => t.spec.title)).toEqual(['Summary', 'Errors']);
+    const summary = gridOf(r.spec, 0).map((it: any) => [
+      r.spec.elements[it.spec.element.name].spec.title,
+      it.spec.x,
+      it.spec.y,
+      it.spec.width,
+    ]);
+    // The stats placed at y 0 push the time series below them.
+    expect(summary).toEqual([
+      ['Rate', 0, 0, 6],
+      ['Errors', 6, 0, 6],
+      ['Throughput', 0, 4, 12],
+    ]);
+    expect(gridOf(r.spec, 1)).toHaveLength(1);
+  });
+
+  it('wraps existing panels into the first tab and rows into a tab', () => {
+    const r = applyV2(
+      v2(),
+      parseOperations([
+        { op: 'add_tab', title: 'Runtime', existing_title: 'Service' },
+        { op: 'add_row', tab: 'Runtime', title: 'JVM' },
+        { op: 'add_row', tab: 'Runtime', title: 'Go', collapsed: true },
+        { op: 'add_panel', tab: 'Runtime', row: 'Go', panel: panel('Goroutines') },
+      ]),
+      ds
+    );
+    const tabs = r.spec.layout.spec.tabs;
+    expect(tabs.map((t: any) => t.spec.title)).toEqual(['Service', 'Runtime']);
+    expect(tabs[0].spec.layout.kind).toBe('RowsLayout'); // the original rows, unchanged
+    const rows = tabs[1].spec.layout.spec.rows;
+    expect(rows.map((x: any) => [x.spec.title, x.spec.collapse])).toEqual([
+      ['JVM', false],
+      ['Go', true],
+    ]);
+    expect(rows[1].spec.layout.spec.items).toHaveLength(1);
+    expect(r.changes.map((c) => c.text)).toContain('Put the existing panels in tab "Service"');
+  });
+
+  it('moves a panel to another tab and closes the gap it left', () => {
+    let spec = applyV2(
+      emptyV2Dashboard('x'),
+      parseOperations([
+        { op: 'add_tab', title: 'A' },
+        { op: 'add_tab', title: 'B' },
+        { op: 'add_panel', tab: 'A', panel: panel('one', { width: 24 }) },
+        { op: 'add_panel', tab: 'A', panel: panel('two', { width: 24 }) },
+      ]),
+      ds
+    ).spec;
+    const r = applyV2(spec, parseOperations([{ op: 'move_panel', panel_key: 'panel-1', tab: 'B' }]), ds);
+    spec = r.spec;
+    expect(gridOf(spec, 0).map((it: any) => [it.spec.element.name, it.spec.y])).toEqual([['panel-2', 0]]);
+    expect(gridOf(spec, 1).map((it: any) => it.spec.element.name)).toEqual(['panel-1']);
+    expect(r.changes[0].text).toBe('Move "one" to tab "B"');
+  });
+
+  it('resizes and repositions within the same grid without overlaps', () => {
+    const items = [
+      { kind: 'GridLayoutItem', spec: { x: 0, y: 0, width: 12, height: 8, element: { name: 'a' } } },
+      { kind: 'GridLayoutItem', spec: { x: 12, y: 0, width: 12, height: 8, element: { name: 'b' } } },
+      { kind: 'GridLayoutItem', spec: { x: 0, y: 0, width: 24, height: 4, element: { name: 'c' } } },
+    ];
+    normalizeGrid(items, 'c');
+    expect(items.map((i) => [i.spec.element.name, i.spec.x, i.spec.y])).toEqual([
+      ['c', 0, 0],
+      ['a', 0, 4],
+      ['b', 12, 4],
+    ]);
+  });
+
+  it('refuses to remove a tab that still has panels, and needs tab names to exist', () => {
+    const spec = applyV2(
+      emptyV2Dashboard('x'),
+      parseOperations([
+        { op: 'add_tab', title: 'A' },
+        { op: 'add_panel', tab: 'A', panel: panel('one') },
+      ]),
+      ds
+    ).spec;
+    expect(() => applyV2(spec, parseOperations([{ op: 'remove_container', tab: 'A' }]), ds)).toThrow(
+      /still has 1 panel/
+    );
+    expect(() => applyV2(spec, parseOperations([{ op: 'add_panel', tab: 'Nope', panel: panel('x') }]), ds)).toThrow(
+      /No tab "Nope". Tabs: "A"/
+    );
+    expect(() => applyV2(spec, parseOperations([{ op: 'add_row', title: 'r' }]), ds)).toThrow(/say which tab/);
+  });
+
+  it('knows which operations need the v2 layout', () => {
+    expect(needsV2Layout(parseOperations([{ op: 'add_panel', panel: panel('x') }]))).toBe(false);
+    expect(needsV2Layout(parseOperations([{ op: 'add_panel', tab: 'A', panel: panel('x') }]))).toBe(true);
+    expect(needsV2Layout(parseOperations([{ op: 'add_tab', title: 'A' }]))).toBe(true);
+    expect(() => applyV1(v1(), parseOperations([{ op: 'add_tab', title: 'A' }]), ds)).toThrow(/needs the v2/);
+  });
+});
+
+describe('tables and traces', () => {
+  it('merges several table queries into one table with named columns', () => {
+    const r = applyV2(
+      emptyV2Dashboard('x'),
+      parseOperations([
+        {
+          op: 'add_panel',
+          panel: {
+            title: 'Endpoints',
+            type: 'table',
+            datasource_uid: 'prom',
+            queries: [
+              { expr: 'a', legend: 'rate' },
+              { expr: 'b', legend: 'p95' },
+            ],
+          },
+        },
+      ]),
+      ds
+    );
+    expect(r.spec.elements['panel-1'].spec.data.spec.transformations).toEqual([
+      { kind: 'Transformation', group: 'merge', spec: { options: {} } },
+      {
+        kind: 'Transformation',
+        group: 'organize',
+        spec: { options: { excludeByName: { Time: true }, renameByName: { 'Value #A': 'rate', 'Value #B': 'p95' } } },
+      },
+    ]);
+  });
+  it('names table columns and sets their units', () => {
+    const r = applyV1(
+      emptyV1Dashboard('x'),
+      parseOperations([
+        {
+          op: 'add_panel',
+          panel: {
+            title: 'E',
+            type: 'table',
+            datasource_uid: 'prom',
+            queries: [
+              { expr: 'a', legend: '{{span_name}}', name: 'Rate', unit: 'reqps' },
+              { expr: 'b', name: 'p95', unit: 's' },
+            ],
+          },
+        },
+      ]),
+      ds
+    );
+    const p = r.spec.panels[0];
+    expect(p.transformations[1].options.renameByName).toEqual({ 'Value #A': 'Rate', 'Value #B': 'p95' });
+    expect(p.fieldConfig.overrides).toEqual([
+      { matcher: { id: 'byName', options: 'Rate' }, properties: [{ id: 'unit', value: 'reqps' }] },
+      { matcher: { id: 'byName', options: 'p95' }, properties: [{ id: 'unit', value: 's' }] },
+    ]);
+  });
+  it('turns a trace search in a traces panel into a table', () => {
+    const r = applyV1(
+      emptyV1Dashboard('x'),
+      parseOperations([
+        {
+          op: 'add_panel',
+          panel: { title: 'Errors', type: 'traces', datasource_uid: 'tempo', queries: ['{ status = error }'] },
+        },
+      ]),
+      { ...ds, tempo: 'tempo' }
+    );
+    expect(r.spec.panels[0]).toMatchObject({
+      type: 'table',
+      targets: [{ queryType: 'traceql', tableType: 'traces', query: '{ status = error }' }],
+    });
+  });
+});
+
+describe('variables and panel options', () => {
+  it('adds data source and custom variables, and panels can use the data source variable', () => {
+    const dsCopy = { ...ds };
+    const r = applyV2(
+      emptyV2Dashboard('x'),
+      parseOperations([
+        { op: 'add_variable', kind: 'datasource', name: 'metrics', ds_type: 'prometheus', hide: true },
+        {
+          op: 'add_variable',
+          kind: 'custom',
+          name: 'spanKind',
+          query: 'Server : SPAN_KIND_SERVER, Consumer : SPAN_KIND_CONSUMER',
+        },
+        {
+          op: 'add_panel',
+          panel: { title: 'x', datasource_uid: '${metrics}', queries: [{ expr: 'up{kind="$spanKind"}' }] },
+        },
+      ]),
+      dsCopy
+    );
+    const [dsVar, custom] = r.spec.variables;
+    expect(dsVar).toMatchObject({
+      kind: 'DatasourceVariable',
+      spec: { name: 'metrics', pluginId: 'prometheus', hide: 'hideVariable' },
+    });
+    expect(custom.spec.options.map((o: any) => [o.text, o.value])).toEqual([
+      ['Server', 'SPAN_KIND_SERVER'],
+      ['Consumer', 'SPAN_KIND_CONSUMER'],
+    ]);
+    expect(custom.spec.current).toEqual({ text: 'Server', value: 'SPAN_KIND_SERVER' });
+    expect(r.spec.elements['panel-1'].spec.data.spec.queries[0].spec.query).toMatchObject({
+      group: 'prometheus',
+      datasource: { name: '${metrics}' },
+    });
+  });
+
+  it('draws thresholds as lines on time series', () => {
+    const r = applyV1(
+      emptyV1Dashboard('x'),
+      parseOperations([
+        {
+          op: 'add_panel',
+          panel: {
+            title: 'err',
+            datasource_uid: 'prom',
+            queries: ['up'],
+            thresholds: [{ value: 1, color: 'yellow' }],
+            threshold_style: 'dashed',
+          },
+        },
+      ]),
+      ds
+    );
+    expect(r.spec.panels[0].fieldConfig.defaults.custom.thresholdsStyle).toEqual({ mode: 'dashed' });
   });
 });

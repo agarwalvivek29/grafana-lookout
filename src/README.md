@@ -27,7 +27,7 @@ More examples (explaining panels, finding dashboards, writing queries, building 
 - **Finds things.** "Where is the latency dashboard for checkout?", "Which services have the most
   errors right now?", "Show me the slowest traces in the last hour".
 - **Builds and edits dashboards.** "Build a dashboard for checkout", "add a p99 line to this panel", "make
-  the error panel a percentage". You see the change with live previews first; nothing is saved until you
+  the error panel a percentage", "rearrange this dashboard", "build a dashboard with tabs for each signal". You see the change with live previews first; nothing is saved until you
   click Apply, and Undo puts it back. Provisioned dashboards get a copy instead of an in-place change.
 - **Careful by default.** Compares with yesterday before calling something high, reads real error
   traces before calling them failures, and says what is measured and what is a guess.

@@ -92,6 +92,25 @@ and Git Sync dashboards are saved as a copy, since an in-place change would be o
 
 ![The dashboard after Apply: the latency panel now shows p95 and p99](docs/media/edit-applied.png)
 
+### Rearrange and optimize a dashboard
+
+> This dashboard is a mess. Rearrange and optimize it: stats in a strip at the top, related charts side by side, logs full width, fix missing units and titles.
+
+Lookout reads where every panel sits and what is missing (units, titles, half-empty lines), then proposes the
+moves, sizes and fixes in one change. The card shows a map of the new layout with the moved panels highlighted.
+
+![Lookout rearranging a messy dashboard: stats on top, charts paired, units and titles fixed](docs/media/optimize.gif)
+
+### Build a dashboard with tabs
+
+> Build a "Service APM" dashboard with tabs, from span metrics, Loki logs and Tempo traces. Variables: service and a custom spanKind. Tabs: Summary (text header, 4 stats, throughput, error rate % with SLO lines at 1% and 5%, latency p50/p95/p99, latency heatmap), Endpoints, Errors, Traces, Dependencies.
+
+Tabs, rows, data source and custom variables, threshold lines, tables merged from several queries, and trace
+search tables all come from one request. Every query is run before you see the proposal; anything that returns
+no data is called out (here the service graph, because the demo has no service graph metrics).
+
+![Lookout building a five-tab Service APM dashboard and touring the tabs](docs/media/tabs.gif)
+
 ### Read the logs
 
 > How many errors did payments log in the last 15 minutes, which services logged errors too, and what do the payment errors have in common?
@@ -126,7 +145,7 @@ lists the data sources Lookout can use.
 - **Finds things.** "Where is the latency dashboard for checkout?", "Which services have the most
   errors right now?", "Show me the slowest traces in the last hour".
 - **Builds and edits dashboards.** "Build a dashboard for checkout", "add a p99 line to this panel", "make
-  the error panel a percentage". You see the change with live previews first; nothing is saved until you
+  the error panel a percentage", "rearrange this dashboard", "build a dashboard with tabs for each signal". You see the change with live previews first; nothing is saved until you
   click Apply, and Undo puts it back. Provisioned dashboards get a copy instead of an in-place change.
 - **Careful by default.** Compares with yesterday before calling something high, reads real error
   traces before calling them failures, and says what is measured and what is a guess.

@@ -1,4 +1,4 @@
-import { runTool } from './agent';
+import { runTool, layoutNotes, panelPlaces } from './agent';
 
 const get = jest.fn();
 const post = jest.fn();
@@ -208,5 +208,82 @@ describe('prom_range_summary', () => {
     expect(s.elevated_episodes[0].to).toMatch(/:15$/);
     expect(s.elevated_pct_of_time).toBe(20);
     expect(out.times_in).toBeTruthy();
+  });
+});
+
+describe('dashboard layout facts for the model', () => {
+  const layout = {
+    kind: 'TabsLayout',
+    spec: {
+      tabs: [
+        {
+          kind: 'TabsLayoutTab',
+          spec: {
+            title: 'Summary',
+            layout: {
+              kind: 'GridLayout',
+              spec: {
+                items: [
+                  { kind: 'GridLayoutItem', spec: { x: 0, y: 0, width: 6, height: 4, element: { name: 'panel-1' } } },
+                  { kind: 'GridLayoutItem', spec: { x: 0, y: 4, width: 24, height: 8, element: { name: 'panel-2' } } },
+                ],
+              },
+            },
+          },
+        },
+        {
+          kind: 'TabsLayoutTab',
+          spec: {
+            title: 'Runtime',
+            layout: {
+              kind: 'RowsLayout',
+              spec: {
+                rows: [
+                  {
+                    kind: 'RowsLayoutRow',
+                    spec: {
+                      title: 'Go',
+                      layout: {
+                        kind: 'GridLayout',
+                        spec: {
+                          items: [
+                            {
+                              kind: 'GridLayoutItem',
+                              spec: { x: 0, y: 0, width: 24, height: 8, element: { name: 'panel-3' } },
+                            },
+                          ],
+                        },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      ],
+    },
+  };
+  const el = (title: string, group: string, unit?: string) => ({
+    kind: 'Panel',
+    spec: { title, vizConfig: { group, spec: { fieldConfig: { defaults: unit ? { unit } : {} } } } },
+  });
+
+  it('places every panel in its tab and row', () => {
+    const { places } = panelPlaces(layout);
+    expect(places['panel-1']).toEqual({ tab: 'Summary', row: undefined, x: 0, y: 0, w: 6, h: 4 });
+    expect(places['panel-3']).toMatchObject({ tab: 'Runtime', row: 'Go', w: 24 });
+  });
+
+  it('notes gaps and missing units', () => {
+    const notes = layoutNotes({
+      layout,
+      elements: {
+        'panel-1': el('Rate', 'stat'),
+        'panel-2': el('Latency', 'timeseries', 's'),
+        'panel-3': el('Goroutines', 'timeseries', 'short'),
+      },
+    });
+    expect(notes).toEqual(['tab "Summary": the line at y 0 uses 6 of 24 columns', 'panel-1 "Rate" (stat) has no unit']);
   });
 });

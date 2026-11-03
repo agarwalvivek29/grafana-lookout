@@ -38,14 +38,18 @@ so text injected through logs or dashboards cannot cause a write by itself.
 
 One tool, `propose_dashboard_change`, with a schema-neutral list of operations:
 
-| Operation      | Arguments                                                                         |
-| -------------- | --------------------------------------------------------------------------------- |
-| `add_panel`    | `panel` (below), optional `row` title to place it in                              |
-| `update_panel` | `panel_key`, `changes` (any panel fields)                                         |
-| `remove_panel` | `panel_key`                                                                       |
-| `add_variable` | `name`, `label`, `datasource_uid`, `query` (e.g. `label_values(metric, service)`) |
-| `set_time`     | `from`, `to`                                                                      |
-| `set_title`    | `title`                                                                           |
+| Operation                               | Arguments                                                                         |
+| --------------------------------------- | --------------------------------------------------------------------------------- |
+| `add_panel`                             | `panel` (below), optional `row` title to place it in                              |
+| `update_panel`                          | `panel_key`, `changes` (any panel fields)                                         |
+| `remove_panel`                          | `panel_key`                                                                       |
+| `add_variable`                          | `name`, `label`, `datasource_uid`, `query` (e.g. `label_values(metric, service)`) |
+| `set_time`                              | `from`, `to`                                                                      |
+| `move_panel`                            | `panel_key`, optional `tab`, `row`, `x`, `y`, `width`, `height`                   |
+| `add_tab`                               | `title`, `existing_title` (name for the tab that receives the existing panels)    |
+| `add_row`                               | `title`, optional `tab`, `collapsed`, `existing_title`                            |
+| `rename_container` / `remove_container` | a `tab` or `row` by title (remove only when empty)                                |
+| `set_title`                             | `title`                                                                           |
 
 A panel is `{ title, type, datasource_uid, queries: [{ expr, legend }], unit, description, decimals, min, max,
 thresholds: [{ value, color }], stack, width, height, content }`. `type` is one of `timeseries`, `stat`, `gauge`,
@@ -53,6 +57,29 @@ thresholds: [{ value, color }], stack, width, height, content }`. `type` is one 
 
 Without `dashboard_uid` the tool creates a new dashboard (classic v1 schema, so it works whether or not
 dynamic dashboards are enabled), optionally in `folder_uid`.
+
+### Layout
+
+Panels live on a 24-column grid. `add_panel` and `move_panel` take an optional tab, row and position; a panel
+placed at `x, y` pushes panels below it down, and gaps close, the same rules Grafana applies when you drag
+panels. Without a position a panel fills the last line or starts a new one.
+
+Tabs, rows and free positions exist only in the v2 schema. When a change needs them on a dashboard stored as
+classic v1 JSON, Lookout reads Grafana's v2 conversion of it, saves in v2 and says so on the card; Undo restores
+the classic version. New dashboards with tabs are created in v2. If dynamic dashboards are turned off
+(`dashboardNewLayouts`), these operations are refused with an explanation.
+
+To optimize a dashboard the model needs facts, not screenshots: `get_dashboard` returns every panel's tab, row,
+position, size and unit, plus `layout_notes` (lines that do not use all 24 columns, panels without units or
+titles, grids with too many panels). After building a proposal the tool returns the same notes for the result
+(`layout_check`) so the model can fix a half-empty line before the user sees it. The card shows a map of the
+resulting layout with new and moved panels highlighted.
+
+### Variables
+
+`add_variable` creates query variables (`label_values(...)`), custom variables (`a, b` or `Text : value`), data
+source variables (panels then use `datasource_uid: "${name}"`, and checks run against the data source the
+variable selects) and text boxes.
 
 ### Schema adapters
 
@@ -72,7 +99,13 @@ Panel keys are the ones `get_dashboard` returns (`panel-<id>` for v1-stored dash
 - Every Prometheus and Loki query runs over the last hour. Dashboard variables are replaced with their current
   value, or with `.*` when the current value is "All" or multiple values. Queries that fail are rejected and
   the error goes back to the model; queries that return no data become a warning on the card.
-- Other data sources are accepted but marked "not checked".
+- Tempo queries (TraceQL) are run too. Other data sources are accepted but marked "not checked".
+- A query that compares a label with `=` to a variable that allows several values or "All" is rejected: Grafana
+  turns several values into a regex, so `=` would match nothing. The model is told to use `=~` or make the
+  variable single-select.
+- Tables built from several queries get merge and organize transformations (one row per label set, named columns
+  with their own units). A trace search put in a `traces` panel becomes a table, since that panel shows one
+  trace.
 - The `dto` endpoint says whether the user can save the dashboard.
 
 ### Where a change is saved
@@ -107,7 +140,7 @@ A newer proposal in the same conversation replaces older ones that were not appl
 - The card shows every change, including text panel content, before anything is saved. Grafana sanitises text
   panel HTML as usual.
 - No links, data links or custom HTML options are accepted from the model.
-- Results stay bounded: at most 30 operations per proposal and 4 previews.
+- Results stay bounded: at most 80 operations per proposal, 40 query checks and 4 previews.
 
 ## Testing
 

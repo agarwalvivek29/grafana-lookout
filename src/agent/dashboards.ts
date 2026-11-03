@@ -11,7 +11,13 @@ import {
   ChangeLine,
   DsTypes,
   emptyV1Dashboard,
+  emptyV2Dashboard,
+  exactMatchOnMultiValue,
+  multiValueVariables,
   Json,
+  layoutNotes,
+  needsV2Layout,
+  PANEL_TYPES,
   OpError,
   Operation,
   PanelView,
@@ -31,16 +37,18 @@ const PANEL_SCHEMA = {
   type: 'object',
   properties: {
     title: { type: 'string' },
-    type: {
-      type: 'string',
-      enum: ['timeseries', 'stat', 'gauge', 'bargauge', 'table', 'barchart', 'piechart', 'heatmap', 'logs', 'text'],
-    },
-    datasource_uid: { type: 'string' },
+    type: { type: 'string', enum: [...PANEL_TYPES] },
+    datasource_uid: { type: 'string', description: 'A data source uid, or a data source variable like "${metrics}"' },
     queries: {
       type: 'array',
       items: {
         type: 'object',
-        properties: { expr: { type: 'string' }, legend: { type: 'string' } },
+        properties: {
+          expr: { type: 'string' },
+          legend: { type: 'string' },
+          name: { type: 'string', description: 'Column name when several queries make one table' },
+          unit: { type: 'string', description: 'Unit of that table column' },
+        },
         required: ['expr'],
       },
     },
@@ -53,6 +61,7 @@ const PANEL_SCHEMA = {
       type: 'array',
       items: { type: 'object', properties: { value: { type: 'number' }, color: { type: 'string' } } },
     },
+    threshold_style: { type: 'string', enum: ['line', 'dashed', 'area', 'line+area', 'dashed+area', 'off'] },
     stack: { type: 'boolean' },
     width: { type: 'number' },
     height: { type: 'number' },
@@ -68,15 +77,23 @@ export const PROPOSE_TOOL: llm.Tool = {
       'Propose creating a dashboard (omit dashboard_uid) or changing one (dashboard_uid from the context or ' +
       'search_dashboards). Nothing is saved: the user sees the change with live previews and decides with an Apply ' +
       'button. Every query is run first; a failing query returns an error for you to fix. Discover metric and ' +
-      'label names before writing queries. Use panel keys from get_dashboard for update_panel/remove_panel. Each ' +
-      'call replaces the previous unapplied proposal, so include every operation the user still wants. ' +
-      'Operations: add_panel {panel, row?}, update_panel {panel_key, changes}, remove_panel {panel_key}, ' +
-      'add_variable {name, label, datasource_uid, query e.g. "label_values(metric, service)"}, set_time {from, to}, ' +
-      'set_title {title}. A panel (or changes): {title, type: timeseries|stat|gauge|bargauge|table|barchart|' +
-      'piechart|heatmap|logs|text, datasource_uid, queries: [{expr, legend}], unit (Grafana unit id such as ' +
-      'reqps, percentunit, s, ms, bytes, short), description, decimals, min, max, thresholds: [{value, color}], ' +
-      'stack, width (1-24), height, content (Markdown, text panels only)}. Use dashboard variables like ' +
-      '$service in queries when the dashboard has them, and $__rate_interval in rate().',
+      'label names before writing queries. Use panel keys and positions from get_dashboard. Each call replaces the ' +
+      'previous unapplied proposal, so include every operation the user still wants. Operations run in order.\n' +
+      'Panels: add_panel {panel, tab?, row?, x?, y?}, update_panel {panel_key, changes}, remove_panel {panel_key}.\n' +
+      'Layout (24-column grid; y grows downwards; a panel placed at x,y pushes panels below it down, and gaps ' +
+      'close automatically): move_panel {panel_key, tab?, row?, x?, y?, width?, height?}; add_tab {title, ' +
+      'existing_title?} (the first add_tab puts the existing panels in a tab named existing_title, default ' +
+      '"Overview"); add_row {title, tab?, collapsed?, existing_title?}; rename_container {tab?, row?, title}; ' +
+      'remove_container {tab?, row?} (only when empty). Tabs and rows refer to their titles.\n' +
+      'Variables: add_variable {name, label, kind: query (datasource_uid, query e.g. "label_values(metric, ' +
+      'service)", regex?) | custom (query "a, b, c" or "Text : value, ...") | datasource (ds_type e.g. ' +
+      '"prometheus", regex?; panels then use datasource_uid "${name}") | textbox, multi?, include_all?, hide?}.\n' +
+      'Other: set_time {from, to}, set_title {title}.\n' +
+      'A panel (or changes): {title, type, datasource_uid, queries: [{expr, legend}], unit (Grafana unit id such as ' +
+      'reqps, percentunit, percent, s, ms, bytes, short), description, decimals, min, max, thresholds: [{value, ' +
+      'color}], threshold_style (line|dashed|area, draws thresholds such as SLOs on time series), stack, width ' +
+      '(1-24), height, content (Markdown for text panels)}. For a table built from several queries give each query a name (column title) and unit. For tempo panels expr is TraceQL; trace lists are table panels. Use dashboard ' +
+      'variables like $service in queries, and $__rate_interval in rate().',
     parameters: {
       type: 'object',
       properties: {
@@ -91,17 +108,41 @@ export const PROPOSE_TOOL: llm.Tool = {
             properties: {
               op: {
                 type: 'string',
-                enum: ['add_panel', 'update_panel', 'remove_panel', 'add_variable', 'set_time', 'set_title'],
+                enum: [
+                  'add_panel',
+                  'update_panel',
+                  'remove_panel',
+                  'move_panel',
+                  'add_tab',
+                  'add_row',
+                  'rename_container',
+                  'remove_container',
+                  'add_variable',
+                  'set_time',
+                  'set_title',
+                ],
               },
               panel: PANEL_SCHEMA,
-              row: { type: 'string' },
-              panel_key: { type: 'string' },
               changes: PANEL_SCHEMA,
+              panel_key: { type: 'string' },
+              tab: { type: 'string' },
+              row: { type: 'string' },
+              x: { type: 'number' },
+              y: { type: 'number' },
+              width: { type: 'number' },
+              height: { type: 'number' },
+              collapsed: { type: 'boolean' },
+              existing_title: { type: 'string' },
               name: { type: 'string' },
               label: { type: 'string' },
+              kind: { type: 'string', enum: ['query', 'custom', 'datasource', 'textbox'] },
               datasource_uid: { type: 'string' },
+              ds_type: { type: 'string' },
               query: { type: 'string' },
+              regex: { type: 'string' },
               multi: { type: 'boolean' },
+              include_all: { type: 'boolean' },
+              hide: { type: 'boolean' },
               from: { type: 'string' },
               to: { type: 'string' },
               title: { type: 'string' },
@@ -132,7 +173,12 @@ export interface Proposal {
   title: string;
   sourceUid?: string;
   sourceTitle?: string;
+  /** API version the change is saved with. */
   apiVersion: ApiVersion;
+  /** API version `before` was read with (differs when the change converts a classic dashboard to v2). */
+  beforeApiVersion?: ApiVersion;
+  /** Things the user should know before saving (shown on the card). */
+  notes: string[];
   /** The saved resource the proposal was built from (edits only). */
   before?: Json;
   after: Json;
@@ -219,6 +265,28 @@ function templateDataSources(spec: Json, ds: DsTypes) {
   walk(spec);
 }
 
+/** "${name}" and "$name" → the data source uid each data source variable selects (or would select first). */
+function dataSourceVariables(spec: Json, schema: 'v1' | 'v2', ds: DsTypes): Record<string, string> {
+  const out: Record<string, string> = {};
+  const list: Json[] = schema === 'v1' ? (spec.templating?.list ?? []) : (spec.variables ?? []);
+  for (const v of list) {
+    const isDs = schema === 'v1' ? v.type === 'datasource' : v.kind === 'DatasourceVariable';
+    if (!isDs) {
+      continue;
+    }
+    const s = schema === 'v1' ? v : v.spec;
+    const pluginId = schema === 'v1' ? s.query : s.pluginId;
+    const current = s.current?.value;
+    const uid =
+      current && ds[current] ? current : Object.keys(ds).find((u) => !u.startsWith('$') && ds[u] === pluginId);
+    if (uid) {
+      out[`\${${s.name}}`] = uid;
+      out[`$${s.name}`] = uid;
+    }
+  }
+  return out;
+}
+
 interface Loaded {
   apiVersion: ApiVersion;
   resource: Json;
@@ -256,30 +324,42 @@ async function loadDashboard(uid: string): Promise<Loaded> {
 
 // ---------------------------------------------------------------- checking queries
 
-const CHECKABLE = new Set(['prometheus', 'loki']);
+const CHECKABLE = new Set(['prometheus', 'loki', 'tempo']);
 
 async function checkPanel(view: PanelView, vars: Record<string, string | undefined>): Promise<PanelCheck> {
   const runnable = view.queries.filter((q) => CHECKABLE.has(q.dsType) && q.dsUid && !q.dsUid.startsWith('$'));
   if (!runnable.length) {
     return { key: view.key, title: view.title, result: 'not checked' };
   }
-  const res = await getBackendSrv().post<{ results: Record<string, { error?: string; frames?: Json[] }> }>(
-    '/api/ds/query',
-    {
-      from: 'now-1h',
-      to: 'now',
-      queries: runnable.map((q, i) => ({
-        refId: String.fromCharCode(65 + i),
-        datasource: { uid: q.dsUid, type: q.dsType },
-        expr: substituteVariables(q.expr, vars),
-        range: true,
-        instant: false,
-        maxDataPoints: 60,
-        ...(q.dsType === 'loki' ? { queryType: 'range', maxLines: 20 } : {}),
-      })),
-    },
-    { showErrorAlert: false }
-  );
+  type QueryResults = { results: Record<string, { error?: string; frames?: Json[] }> };
+  const body = {
+    from: 'now-1h',
+    to: 'now',
+    queries: runnable.map((q, i) => ({
+      refId: String.fromCharCode(65 + i),
+      datasource: { uid: q.dsUid, type: q.dsType },
+      expr: substituteVariables(q.expr, vars),
+      range: true,
+      instant: false,
+      maxDataPoints: 60,
+      ...(q.dsType === 'loki' ? { queryType: 'range', maxLines: 20 } : {}),
+      ...(q.dsType === 'tempo'
+        ? { query: substituteVariables(q.expr, vars), queryType: 'traceql', limit: 5, tableType: 'traces' }
+        : {}),
+    })),
+  };
+  let res: QueryResults;
+  try {
+    res = await getBackendSrv().post<QueryResults>('/api/ds/query', body, { showErrorAlert: false });
+  } catch (e) {
+    // A query the data source rejects comes back as an HTTP error; its message says what is wrong.
+    const err = e as Json;
+    const detail =
+      Object.values<Json>(err?.data?.results ?? {}).find((r) => r?.error)?.error ?? err?.data?.message ?? err?.message;
+    throw new OpError(
+      `Query for panel "${view.title}" failed: ${detail ?? `HTTP ${err?.status}`}. Queries: ${runnable.map((q) => q.expr).join(' | ')}`
+    );
+  }
   let series = 0;
   for (const [ref, r] of Object.entries(res.results ?? {})) {
     if (r.error) {
@@ -296,27 +376,61 @@ async function checkPanel(view: PanelView, vars: Record<string, string | undefin
 export async function proposeDashboardChange(args: Json): Promise<string> {
   const ops: Operation[] = parseOperations(args.operations);
   const ds = await dataSourceTypes();
+  const realDs = { ...ds };
   const uid = args.dashboard_uid ? String(args.dashboard_uid) : '';
+  const layout = needsV2Layout(ops);
+  if (layout && (config as Json).featureToggles?.dashboardNewLayouts === false) {
+    throw new OpError(
+      'Tabs, rows and panel positions need dynamic dashboards (feature toggle dashboardNewLayouts), which is off ' +
+        'on this Grafana. Add panels without tab, row, x or y instead.'
+    );
+  }
+  const notes: string[] = [];
   let loaded: Loaded | null = null;
   let applied: ApplyResult;
   let schema: 'v1' | 'v2' = 'v1';
+  let beforeApiVersion: ApiVersion | undefined;
   if (uid) {
     loaded = await loadDashboard(uid);
+    beforeApiVersion = loaded.apiVersion;
+    let spec = loaded.resource.spec;
+    if (layout && loaded.apiVersion !== 'v2') {
+      // Tabs, rows and free positions exist only in the v2 layout: convert (Grafana does it on read) and say so.
+      const v2 = await getBackendSrv().get<Json>(api('v2', uid), undefined, undefined, { showErrorAlert: false });
+      spec = v2.spec;
+      loaded = { ...loaded, apiVersion: 'v2' };
+      notes.push(
+        "Saves this dashboard in Grafana's v2 dashboard format, which tabs, rows and free panel positions " +
+          'need. Undo restores the previous version.'
+      );
+    }
     schema = loaded.apiVersion === 'v2' ? 'v2' : 'v1';
-    templateDataSources(loaded.resource.spec, ds);
-    applied = (schema === 'v2' ? applyV2 : applyV1)(loaded.resource.spec, ops, ds);
+    templateDataSources(spec, ds);
+    applied = (schema === 'v2' ? applyV2 : applyV1)(spec, ops, ds);
   } else {
     const title = String(args.title ?? '').trim();
     if (!title) {
       throw new OpError('A new dashboard needs a title');
     }
-    applied = applyV1(emptyV1Dashboard(title), ops, ds);
+    schema = layout ? 'v2' : 'v1';
+    applied = schema === 'v2' ? applyV2(emptyV2Dashboard(title), ops, ds) : applyV1(emptyV1Dashboard(title), ops, ds);
   }
   const vars = variableValues(applied.spec, schema);
-  const checks: PanelCheck[] = [];
-  for (const view of applied.touched.slice(0, 12)) {
-    checks.push(await checkPanel(view, vars));
+  // Panels that use a data source variable are checked and previewed with the data source it selects now.
+  const dsVars = dataSourceVariables(applied.spec, schema, realDs);
+  const views = applied.touched.map((v) => ({
+    ...v,
+    queries: v.queries.map((q) => ({ ...q, dsUid: dsVars[q.dsUid] ?? q.dsUid })),
+  }));
+  const misuse = exactMatchOnMultiValue(views, multiValueVariables(applied.spec, schema));
+  if (misuse.length) {
+    throw new OpError(
+      `${misuse.slice(0, 5).join('; ')}, but that variable allows several values or All, which Grafana turns ` +
+        'into a regex, so "=" matches nothing. Use =~ in those queries, or make the variable single-select ' +
+        '(multi false, include_all false).'
+    );
   }
+  const checks: PanelCheck[] = await Promise.all(views.slice(0, 40).map((v) => checkPanel(v, vars)));
 
   const { target, reason } = saveTarget(loaded ? { managedBy: loaded.managedBy, canSave: loaded.canSave } : null);
   const sourceTitle = loaded?.resource.spec?.title;
@@ -337,13 +451,15 @@ export async function proposeDashboardChange(args: Json): Promise<string> {
     title,
     sourceUid: uid || undefined,
     sourceTitle,
-    apiVersion: loaded?.apiVersion ?? 'v1beta1',
+    apiVersion: loaded?.apiVersion ?? (schema === 'v2' ? 'v2' : 'v1beta1'),
+    beforeApiVersion,
+    notes,
     before: loaded?.resource,
     after: applied.spec,
     folderUid: loaded ? (loaded.managedBy === 'repo' ? undefined : loaded.folderUid) : args.folder_uid,
     summary,
     changes: applied.changes,
-    previews: applied.touched.filter((v) => v.type !== 'text').slice(0, 4),
+    previews: views.filter((v) => v.type !== 'text').slice(0, 4),
     checks,
     vars,
     status: 'pending',
@@ -353,11 +469,16 @@ export async function proposeDashboardChange(args: Json): Promise<string> {
     saves_as: target === 'new' ? 'new dashboard' : target === 'copy' ? 'a copy' : 'change in place',
     reason,
     title,
-    changes: applied.changes.map((c) => c.text),
+    changes: applied.changes.map((c) => c.text).slice(0, 60),
+    notes: notes.length ? notes : undefined,
+    // Facts about the resulting layout, so a half-empty line can be fixed before the user decides.
+    layout_check: schema === 'v2' ? layoutNotes(applied.spec) : undefined,
     checks: checks.map((c) => ({ panel: c.title, result: c.result, series: c.series })),
     note:
       'The user now sees this proposal with live previews and an Apply button. Nothing is saved until they ' +
-      'click the button on the card below your answer. In one or two sentences say what you prepared and ' +
+      'click the button on the card below your answer. If layout_check lists lines that do not use all 24 ' +
+      'columns and that was not intended, call the tool again with the fixed layout. Then in one or two sentences ' +
+      'say what you prepared and ' +
       'mention panels with no data. Never say it was created or saved, and do not link to it.',
   });
 }
@@ -446,10 +567,12 @@ export async function undoProposal(id: string) {
       if (current.metadata?.resourceVersion !== p.savedResourceVersion) {
         throw new Error('The dashboard changed after Lookout saved it. Use its version history to restore.');
       }
+      // Restore in the format the dashboard had before (classic if this change converted it to v2).
+      const restoreVersion = p.beforeApiVersion ?? p.apiVersion;
       await srv.put(
-        api(p.apiVersion, p.savedUid),
+        api(restoreVersion, p.savedUid),
         {
-          apiVersion: `dashboard.grafana.app/${p.apiVersion}`,
+          apiVersion: `dashboard.grafana.app/${restoreVersion}`,
           kind: 'Dashboard',
           metadata: {
             ...current.metadata,

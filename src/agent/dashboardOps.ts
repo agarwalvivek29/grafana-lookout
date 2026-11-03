@@ -14,12 +14,18 @@ export const PANEL_TYPES = [
   'heatmap',
   'logs',
   'text',
+  'nodeGraph',
+  'traces',
 ] as const;
 export type PanelType = (typeof PANEL_TYPES)[number];
 
 export interface PanelQuery {
   expr: string;
   legend?: string;
+  /** Column name in a table panel. */
+  name?: string;
+  /** Unit of this query's column in a table panel. */
+  unit?: string;
 }
 
 /** Panel fields the model may set. Anything else (links, raw options, custom HTML) is never accepted. */
@@ -38,15 +44,55 @@ export interface PanelSpec {
   width?: number;
   height?: number;
   content?: string;
+  /** How thresholds are drawn on time series: line, dashed, area, line+area or off. */
+  threshold_style?: string;
 }
 
+/** Where a panel goes in a v2 layout: a tab and/or row by title, and an optional grid position. */
+export interface Placement {
+  tab?: string;
+  row?: string;
+  x?: number;
+  y?: number;
+}
+
+export type VariableKind = 'query' | 'custom' | 'datasource' | 'textbox';
+
 export type Operation =
-  | { op: 'add_panel'; panel: PanelSpec; row?: string }
+  | ({ op: 'add_panel'; panel: PanelSpec } & Placement)
   | { op: 'update_panel'; panel_key: string; changes: PanelSpec }
   | { op: 'remove_panel'; panel_key: string }
-  | { op: 'add_variable'; name: string; label?: string; datasource_uid: string; query: string; multi?: boolean }
+  | ({ op: 'move_panel'; panel_key: string; width?: number; height?: number } & Placement)
+  | { op: 'add_tab'; title: string; existing_title?: string }
+  | { op: 'add_row'; title: string; tab?: string; collapsed?: boolean; existing_title?: string }
+  | { op: 'rename_container'; tab?: string; row?: string; title: string }
+  | { op: 'remove_container'; tab?: string; row?: string }
+  | {
+      op: 'add_variable';
+      name: string;
+      label?: string;
+      kind?: VariableKind;
+      datasource_uid?: string;
+      query?: string;
+      ds_type?: string;
+      regex?: string;
+      multi?: boolean;
+      include_all?: boolean;
+      hide?: boolean;
+    }
   | { op: 'set_time'; from: string; to: string }
   | { op: 'set_title'; title: string };
+
+/** Operations that need the v2 layout (tabs, rows, positions). */
+export const LAYOUT_OPS = ['move_panel', 'add_tab', 'add_row', 'rename_container', 'remove_container'];
+
+export function needsV2Layout(ops: Operation[]): boolean {
+  return ops.some(
+    (o) =>
+      LAYOUT_OPS.includes(o.op) ||
+      (o.op === 'add_panel' && (o.tab !== undefined || o.x !== undefined || o.y !== undefined))
+  );
+}
 
 export interface ChangeLine {
   kind: 'add' | 'update' | 'remove' | 'other';
@@ -74,7 +120,7 @@ export interface ApplyResult {
 /** Data source uid → type, resolved by the caller before applying. */
 export type DsTypes = Record<string, string>;
 
-export const MAX_OPERATIONS = 30;
+export const MAX_OPERATIONS = 80;
 const GRID_COLUMNS = 24;
 
 const COLOR = /^(#[0-9a-f]{3,8}|[a-z]+(-[a-z]+)*)$/i;
@@ -93,6 +139,10 @@ function defaultSize(type: PanelType | string | undefined): { w: number; h: numb
       return { w: 24, h: 10 };
     case 'text':
       return { w: 24, h: 4 };
+    case 'nodeGraph':
+      return { w: 12, h: 16 };
+    case 'traces':
+      return { w: 24, h: 10 };
     default:
       return { w: 12, h: 8 };
   }
@@ -101,7 +151,52 @@ function defaultSize(type: PanelType | string | undefined): { w: number; h: numb
 const clampW = (w: unknown, dflt: number) => Math.max(2, Math.min(GRID_COLUMNS, Math.round(Number(w) || dflt)));
 const clampH = (h: unknown, dflt: number) => Math.max(2, Math.min(40, Math.round(Number(h) || dflt)));
 
+/**
+ * Several instant queries in a table panel show as separate tables unless merged: merge them into one row per
+ * label set, hide the time column, and name each value column after the query's legend.
+ */
+export function tableTransforms(type: string, queries: PanelQuery[] | undefined): Array<{ id: string; options: Json }> {
+  if (type !== 'table' || !queries || queries.length < 2) {
+    return [];
+  }
+  const renameByName: Record<string, string> = {};
+  queries.forEach((q, i) => {
+    const name = columnName(q);
+    if (name) {
+      renameByName[`Value #${refId(i)}`] = name;
+    }
+  });
+  return [
+    { id: 'merge', options: {} },
+    { id: 'organize', options: { excludeByName: { Time: true }, renameByName } },
+  ];
+}
+
+const columnName = (q: PanelQuery) => q.name ?? (q.legend && !q.legend.includes('{{') ? q.legend : undefined);
+
+/** Per-column units for a table built from several queries (Grafana field overrides by column name). */
+export function tableOverrides(type: string, queries: PanelQuery[] | undefined): Json[] {
+  if (type !== 'table' || !queries || queries.length < 2) {
+    return [];
+  }
+  return queries
+    .map((q, i) => ({ q, col: columnName(q) ?? `Value #${refId(i)}` }))
+    .filter(({ q }) => q.unit)
+    .map(({ q, col }) => ({ matcher: { id: 'byName', options: col }, properties: [{ id: 'unit', value: q.unit }] }));
+}
+
+const v2Transforms = (list: Array<{ id: string; options: Json }>) =>
+  list.map((x) => ({ kind: 'Transformation', group: x.id, spec: { options: x.options } }));
+
+/** A "traces" panel shows one trace; a TraceQL search ({...}) belongs in a table. */
+function fixTraceSearch(p: PanelSpec) {
+  if (p.type === 'traces' && p.queries?.some((q) => q.expr.trim().startsWith('{'))) {
+    p.type = 'table';
+  }
+}
+
 function checkPanelSpec(p: PanelSpec, isNew: boolean) {
+  fixTraceSearch(p);
   if (isNew && !p.title) {
     throw new OpError('add_panel needs panel.title');
   }
@@ -142,11 +237,24 @@ function mergeFieldDefaults(existing: Json | undefined, p: PanelSpec): Json {
       ],
     };
   }
+  if (p.threshold_style !== undefined) {
+    const mode = THRESHOLD_STYLES[p.threshold_style] ?? 'line';
+    d.custom = { ...(d.custom ?? {}), thresholdsStyle: { mode } };
+  }
   if (p.stack !== undefined) {
     d.custom = { ...(d.custom ?? {}), stacking: { mode: p.stack ? 'normal' : 'none', group: 'A' } };
   }
   return d;
 }
+
+const THRESHOLD_STYLES: Record<string, string> = {
+  line: 'line',
+  dashed: 'dashed',
+  area: 'area',
+  'line+area': 'line+area',
+  'dashed+area': 'dashed+area',
+  off: 'off',
+};
 
 function defaultOptions(type: string, content?: string): Json {
   switch (type) {
@@ -169,7 +277,7 @@ function defaultOptions(type: string, content?: string): Json {
 /** Query fields for one data source type (shared by v1 targets and v2 query specs). */
 function querySpec(dsType: string, panelType: string, q: PanelQuery): Json {
   if (dsType === 'tempo') {
-    return { query: q.expr, queryType: 'traceql', limit: 20 };
+    return { query: q.expr, queryType: 'traceql', limit: 20, tableType: 'traces' };
   }
   const spec: Json = { expr: q.expr };
   if (q.legend) {
@@ -195,7 +303,9 @@ function dsTypeOf(ds: DsTypes, uid: string): string {
 }
 
 function describePanel(p: PanelSpec): string {
-  const q = p.queries?.map((x) => x.expr).join('\n');
+  const q = p.queries
+    ?.map((x) => (x.name || x.unit ? `${x.expr}   [column "${x.name ?? ''}"${x.unit ? `, ${x.unit}` : ''}]` : x.expr))
+    .join('\n');
   return q ?? p.content ?? '';
 }
 
@@ -216,6 +326,7 @@ function updateSummary(c: PanelSpec): string[] {
     width: 'size',
     height: 'size',
     content: 'text',
+    threshold_style: 'thresholds',
   };
   for (const k of Object.keys(c) as Array<keyof PanelSpec>) {
     if (c[k] !== undefined && label[k] && !names.includes(label[k])) {
@@ -326,6 +437,11 @@ export function applyV1(original: Json, ops: Operation[], ds: DsTypes): ApplyRes
       if (type !== 'text') {
         panel.datasource = { type: dsTypeOf(ds, p.datasource_uid!), uid: p.datasource_uid };
         panel.targets = v1Targets(ds, p.datasource_uid!, type, p.queries!);
+        const tx = tableTransforms(type, p.queries);
+        if (tx.length) {
+          panel.transformations = tx;
+          panel.fieldConfig.overrides = tableOverrides(type, p.queries);
+        }
       }
       cursor = { x: cursor.x + w, y: cursor.y, rowH: Math.max(cursor.rowH, h) };
       // A row title is only honoured for an existing collapsed row; otherwise the panel goes at the bottom.
@@ -362,6 +478,14 @@ export function applyV1(original: Json, ops: Operation[], ds: DsTypes): ApplyRes
           throw new OpError(`Panel "${panel.title}" has no data source; set datasource_uid`);
         }
         panel.targets = v1Targets(ds, dsUid, panel.type, c.queries);
+        const tx = tableTransforms(panel.type, c.queries);
+        if (tx.length) {
+          panel.transformations = tx;
+          panel.fieldConfig = {
+            ...(panel.fieldConfig ?? { defaults: {} }),
+            overrides: tableOverrides(panel.type, c.queries),
+          };
+        }
         panel.datasource = { type: dsTypeOf(ds, dsUid), uid: dsUid };
       } else if (c.datasource_uid) {
         const type = dsTypeOf(ds, c.datasource_uid);
@@ -393,6 +517,8 @@ export function applyV1(original: Json, ops: Operation[], ds: DsTypes): ApplyRes
       const [removed] = found.list.splice(found.index, 1);
       touched.delete(removed.id);
       changes.push({ kind: 'remove', text: `Remove panel "${removed.title}"` });
+    } else if (LAYOUT_OPS.includes(o.op)) {
+      throw new OpError(`${o.op} needs the v2 dashboard layout`);
     } else {
       applyCommon(spec, o, changes, 'v1', ds);
     }
@@ -410,29 +536,80 @@ interface GridTarget {
   spec: Json;
 }
 
-/** The grid a new panel goes into: inside the row or tab with this title, otherwise the last grid in the layout. */
-export function v2TargetGrid(layout: Json, row?: string): GridTarget | null {
+const isGrid = (l: Json) => l?.kind === 'GridLayout' || l?.kind === 'AutoGridLayout';
+const children = (l: Json): Json[] => l?.spec?.tabs ?? l?.spec?.rows ?? [];
+const sameTitle = (a: unknown, b: unknown) =>
+  String(a ?? '')
+    .trim()
+    .toLowerCase() ===
+  String(b ?? '')
+    .trim()
+    .toLowerCase();
+
+function titles(items: Json[]): string {
+  return items.map((i) => `"${i.spec?.title ?? ''}"`).join(', ') || 'none';
+}
+
+/** Find a tab (top-level TabsLayout) by title. */
+function findTab(layout: Json, tab: string): Json {
+  if (layout?.kind !== 'TabsLayout') {
+    throw new OpError(`This dashboard has no tabs; add one with add_tab first`);
+  }
+  const t = children(layout).find((x) => sameTitle(x.spec?.title, tab));
+  if (!t) {
+    throw new OpError(`No tab "${tab}". Tabs: ${titles(children(layout))}`);
+  }
+  return t;
+}
+
+/** The layout a tab/row reference points at (the tab's layout, or the whole dashboard). */
+function scopeLayout(root: Json, tab?: string): Json {
+  return tab ? findTab(root, tab).spec.layout : root;
+}
+
+/**
+ * The grid a panel goes into. With a row (and optionally a tab) it is that row's grid. Without one it is the
+ * last grid in the scope, so a dashboard keeps filling from the bottom as before.
+ */
+export function v2TargetGrid(layout: Json, row?: string, tab?: string): GridTarget | null {
+  const scope = scopeLayout(layout, tab);
+  if (row) {
+    let found: Json | null = null;
+    const walk = (l: Json) => {
+      for (const item of children(l)) {
+        if (!found && item.kind === 'RowsLayoutRow' && sameTitle(item.spec?.title, row)) {
+          found = item;
+        }
+        walk(item.spec?.layout);
+      }
+    };
+    walk(scope);
+    // Older callers passed a tab title as "row"; accept that too.
+    if (!found && scope?.kind === 'TabsLayout') {
+      found = children(scope).find((t) => sameTitle(t.spec?.title, row)) ?? null;
+    }
+    if (!found) {
+      throw new OpError(`No row "${row}"${tab ? ` in tab "${tab}"` : ''}`);
+    }
+    return v2TargetGrid((found as Json).spec.layout);
+  }
   let last: GridTarget | null = null;
-  let named: GridTarget | null = null;
-  const walk = (l: Json, inNamed: boolean) => {
+  const walk = (l: Json) => {
     if (!l) {
       return;
     }
-    if (l.kind === 'GridLayout' || l.kind === 'AutoGridLayout') {
+    if (isGrid(l)) {
       l.spec = l.spec ?? {};
       l.spec.items = l.spec.items ?? [];
       last = l as GridTarget;
-      if (inNamed && !named) {
-        named = l as GridTarget;
-      }
       return;
     }
-    for (const item of l.spec?.rows ?? l.spec?.tabs ?? []) {
-      walk(item?.spec?.layout, inNamed || (Boolean(row) && item?.spec?.title === row));
+    for (const item of children(l)) {
+      walk(item?.spec?.layout);
     }
   };
-  walk(layout, false);
-  return named ?? last;
+  walk(scope);
+  return last;
 }
 
 function v2Items(layout: Json): Json[] {
@@ -441,11 +618,11 @@ function v2Items(layout: Json): Json[] {
     if (!l) {
       return;
     }
-    if (l.kind === 'GridLayout' || l.kind === 'AutoGridLayout') {
+    if (isGrid(l)) {
       out.push(...(l.spec?.items ?? []));
       return;
     }
-    for (const item of l.spec?.rows ?? l.spec?.tabs ?? []) {
+    for (const item of children(l)) {
       walk(item?.spec?.layout);
     }
   };
@@ -453,20 +630,166 @@ function v2Items(layout: Json): Json[] {
   return out;
 }
 
-function v2RemoveItem(layout: Json, key: string) {
+/** Remove a panel from whichever grid holds it; returns the removed layout item. */
+function v2RemoveItem(layout: Json, key: string): Json | null {
+  let removed: Json | null = null;
   const walk = (l: Json) => {
     if (!l) {
       return;
     }
-    if (l.kind === 'GridLayout' || l.kind === 'AutoGridLayout') {
-      l.spec.items = (l.spec?.items ?? []).filter((it: Json) => it.spec?.element?.name !== key);
+    if (isGrid(l)) {
+      const items: Json[] = l.spec?.items ?? [];
+      const i = items.findIndex((it) => it.spec?.element?.name === key);
+      if (i >= 0) {
+        removed = items.splice(i, 1)[0];
+      }
       return;
     }
-    for (const item of l.spec?.rows ?? l.spec?.tabs ?? []) {
+    for (const item of children(l)) {
       walk(item?.spec?.layout);
     }
   };
   walk(layout);
+  return removed;
+}
+
+const overlaps = (a: Json, b: Json) =>
+  a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+
+/**
+ * Make a grid valid after a change: nothing overlaps (items under a placed panel move down) and nothing floats
+ * (every item moves up as far as it can), the same rules Grafana's grid applies when you drag panels.
+ * The item with key `first` wins when two want the same place.
+ */
+export function normalizeGrid(items: Json[], first?: string) {
+  const grid = items.filter((it) => it.kind === 'GridLayoutItem');
+  const order = [...grid].sort((a, b) => {
+    const pa = a.spec.element?.name === first ? -1 : 0;
+    const pb = b.spec.element?.name === first ? -1 : 0;
+    return a.spec.y - b.spec.y || pa - pb || a.spec.x - b.spec.x;
+  });
+  const placed: Json[] = [];
+  for (const it of order) {
+    const s = it.spec;
+    s.x = Math.max(0, Math.min(GRID_COLUMNS - s.width, s.x));
+    // Fall up as far as possible, then down past anything in the way.
+    s.y = 0;
+    let moved = true;
+    while (moved) {
+      moved = false;
+      for (const p of placed) {
+        if (overlaps(s, p.spec)) {
+          s.y = p.spec.y + p.spec.height;
+          moved = true;
+        }
+      }
+    }
+    placed.push(it);
+  }
+  // Keep the items in reading order so the saved JSON matches what users see.
+  items.sort((a, b) => (a.spec?.y ?? 0) - (b.spec?.y ?? 0) || (a.spec?.x ?? 0) - (b.spec?.x ?? 0));
+}
+
+/** Fallback placement: fill the last line if there is room, otherwise start a new line. */
+function nextSlot(items: Json[], w: number): { x: number; y: number } {
+  const grid = items.filter((it) => it.kind === 'GridLayoutItem');
+  if (!grid.length) {
+    return { x: 0, y: 0 };
+  }
+  const bottom = Math.max(...grid.map((it) => it.spec.y + it.spec.height));
+  const lastLine = grid.filter((it) => it.spec.y + it.spec.height === bottom);
+  const lineY = Math.min(...lastLine.map((it) => it.spec.y));
+  const lineEnd = Math.max(...grid.filter((it) => it.spec.y === lineY).map((it) => it.spec.x + it.spec.width));
+  return lineEnd + w <= GRID_COLUMNS ? { x: lineEnd, y: lineY } : { x: 0, y: bottom };
+}
+
+function placeInGrid(grid: GridTarget, key: string, w: number, h: number, at: { x?: number; y?: number }) {
+  const ref = { kind: 'ElementReference', name: key };
+  if (grid.kind === 'AutoGridLayout') {
+    grid.spec.items.push({ kind: 'AutoGridLayoutItem', spec: { element: ref } });
+    return;
+  }
+  const slot = at.x === undefined && at.y === undefined ? nextSlot(grid.spec.items, w) : null;
+  grid.spec.items.push({
+    kind: 'GridLayoutItem',
+    spec: {
+      x: slot ? slot.x : Math.round(Number(at.x ?? 0)),
+      // Without a y the panel goes to the bottom; normalizeGrid pulls it up into any gap.
+      y: slot ? slot.y : Math.round(Number(at.y ?? 10000)),
+      width: w,
+      height: h,
+      element: ref,
+    },
+  });
+  normalizeGrid(grid.spec.items, key);
+}
+
+/** The grid that holds this layout item (by element name, since the item may have been removed). */
+function findGridOf(layout: Json, item: Json | null): GridTarget | null {
+  const key = item?.spec?.element?.name;
+  if (!key) {
+    return null;
+  }
+  let hit: GridTarget | null = null;
+  const walk = (l: Json) => {
+    if (!l || hit) {
+      return;
+    }
+    if (isGrid(l)) {
+      if ((l.spec?.items ?? []).some((it: Json) => it.spec?.element?.name === key)) {
+        hit = l as GridTarget;
+      }
+      return;
+    }
+    for (const c of children(l)) {
+      walk(c.spec?.layout);
+    }
+  };
+  walk(layout);
+  return hit;
+}
+
+const emptyGrid = () => ({ kind: 'GridLayout', spec: { items: [] as Json[] } });
+
+/** Turn a layout object into a container of the given kind in place, keeping existing content as the first child. */
+function wrapInPlace(l: Json, kind: 'TabsLayout' | 'RowsLayout', firstTitle: string) {
+  const inner = { kind: l.kind, spec: l.spec };
+  const hasContent = v2Items(inner).length > 0 || children(inner).length > 0;
+  const childKind = kind === 'TabsLayout' ? 'TabsLayoutTab' : 'RowsLayoutRow';
+  const first = {
+    kind: childKind,
+    spec: { title: firstTitle, layout: inner, ...(kind === 'RowsLayout' ? { collapse: false } : {}) },
+  };
+  l.kind = kind;
+  l.spec = { [kind === 'TabsLayout' ? 'tabs' : 'rows']: hasContent ? [first] : [] };
+}
+
+/** Find the tab or row a rename/remove refers to, with its parent list. */
+function findContainer(root: Json, tab?: string, row?: string): { list: Json[]; index: number; item: Json } {
+  if (row) {
+    const scope = scopeLayout(root, tab);
+    let hit: { list: Json[]; index: number; item: Json } | null = null;
+    const walk = (l: Json) => {
+      const list = children(l);
+      list.forEach((item, index) => {
+        if (!hit && item.kind === 'RowsLayoutRow' && sameTitle(item.spec?.title, row)) {
+          hit = { list, index, item };
+        }
+        walk(item.spec?.layout);
+      });
+    };
+    walk(scope);
+    if (!hit) {
+      throw new OpError(`No row "${row}"${tab ? ` in tab "${tab}"` : ''}`);
+    }
+    return hit;
+  }
+  if (tab) {
+    const t = findTab(root, tab);
+    const list = children(root);
+    return { list, index: list.indexOf(t), item: t };
+  }
+  throw new OpError('Name the tab or row');
 }
 
 function v2Queries(ds: DsTypes, uid: string, panelType: string, queries: PanelQuery[]): Json[] {
@@ -545,7 +868,7 @@ export function applyV2(original: Json, ops: Operation[], ds: DsTypes): ApplyRes
             kind: 'QueryGroup',
             spec: {
               queries: type === 'text' ? [] : v2Queries(ds, p.datasource_uid!, type, p.queries!),
-              transformations: [],
+              transformations: v2Transforms(tableTransforms(type, p.queries)),
               queryOptions: {},
             },
           },
@@ -555,40 +878,25 @@ export function applyV2(original: Json, ops: Operation[], ds: DsTypes): ApplyRes
             version: '',
             spec: {
               options: defaultOptions(type, p.content),
-              fieldConfig: { defaults: mergeFieldDefaults({}, p), overrides: [] },
+              fieldConfig: { defaults: mergeFieldDefaults({}, p), overrides: tableOverrides(type, p.queries) },
             },
           },
         },
       };
-      const grid = v2TargetGrid(spec.layout, o.row);
+      const grid = v2TargetGrid(spec.layout, o.row, o.tab);
       if (!grid) {
         throw new OpError('This dashboard layout has no grid to add a panel to');
       }
-      const ref = { kind: 'ElementReference', name: key };
-      if (grid.kind === 'AutoGridLayout') {
-        grid.spec.items.push({ kind: 'AutoGridLayoutItem', spec: { element: ref } });
-      } else {
-        const size = defaultSize(type);
-        const w = clampW(p.width, size.w);
-        const h = clampH(p.height, size.h);
-        const items: Json[] = grid.spec.items;
-        const bottom = Math.max(0, ...items.map((it) => (it.spec?.y ?? 0) + (it.spec?.height ?? 0)));
-        // Fill the last line if there is room, otherwise start a new one.
-        const lastLine = items.filter((it) => (it.spec?.y ?? 0) + (it.spec?.height ?? 0) === bottom);
-        const lineY = lastLine.length ? Math.min(...lastLine.map((it) => it.spec.y ?? 0)) : bottom;
-        const lineEnd = Math.max(
-          0,
-          ...items.filter((it) => (it.spec?.y ?? 0) === lineY).map((it) => (it.spec?.x ?? 0) + (it.spec?.width ?? 0))
-        );
-        const fits = lastLine.length > 0 && lineEnd + w <= GRID_COLUMNS && items.length > 0;
-        items.push({
-          kind: 'GridLayoutItem',
-          spec: { x: fits ? lineEnd : 0, y: fits ? lineY : bottom, width: w, height: h, element: ref },
-        });
-      }
+      const size = defaultSize(type);
+      placeInGrid(grid, key, clampW(p.width, size.w), clampH(p.height, size.h), o);
       spec.elements[key] = el;
       touched.add(key);
-      changes.push({ kind: 'add', text: `Add panel "${p.title}" (${type})`, detail: describePanel(p) });
+      const where = [o.tab && `tab "${o.tab}"`, o.row && `row "${o.row}"`].filter(Boolean).join(', ');
+      changes.push({
+        kind: 'add',
+        text: `Add panel "${p.title}" (${type})${where ? ` in ${where}` : ''}`,
+        detail: describePanel(p),
+      });
     } else if (o.op === 'update_panel') {
       checkPanelSpec(o.changes, false);
       const el = spec.elements[o.panel_key];
@@ -621,6 +929,14 @@ export function applyV2(original: Json, ops: Operation[], ds: DsTypes): ApplyRes
         }
         s.data = s.data ?? { kind: 'QueryGroup', spec: { transformations: [], queryOptions: {} } };
         s.data.spec.queries = v2Queries(ds, dsUid, s.vizConfig.group, c.queries);
+        const tx = tableTransforms(s.vizConfig.group, c.queries);
+        if (tx.length) {
+          s.data.spec.transformations = v2Transforms(tx);
+          s.vizConfig.spec.fieldConfig = {
+            ...(s.vizConfig.spec.fieldConfig ?? { defaults: {} }),
+            overrides: tableOverrides(s.vizConfig.group, c.queries),
+          };
+        }
       } else if (c.datasource_uid) {
         const type = dsTypeOf(ds, c.datasource_uid);
         for (const q of current) {
@@ -635,6 +951,10 @@ export function applyV2(original: Json, ops: Operation[], ds: DsTypes): ApplyRes
         if (item?.kind === 'GridLayoutItem') {
           item.spec.width = clampW(c.width, item.spec.width);
           item.spec.height = clampH(c.height, item.spec.height);
+          const grid = findGridOf(spec.layout, item);
+          if (grid) {
+            normalizeGrid(grid.spec.items, o.panel_key);
+          }
         }
       }
       touched.add(o.panel_key);
@@ -643,13 +963,98 @@ export function applyV2(original: Json, ops: Operation[], ds: DsTypes): ApplyRes
         text: `Change "${oldTitle}": ${updateSummary(c).join(', ')}${c.title && c.title !== oldTitle ? ` (now "${c.title}")` : ''}`,
         detail: c.queries ? `${before}\n→ ${describePanel(c)}` : undefined,
       });
+    } else if (o.op === 'move_panel') {
+      const el = spec.elements[o.panel_key];
+      if (!el) {
+        throw new OpError(`panel_key "${o.panel_key}" does not exist on this dashboard`);
+      }
+      const ownGrid = findGridOf(spec.layout, { spec: { element: { name: o.panel_key } } });
+      const target = o.tab || o.row ? v2TargetGrid(spec.layout, o.row, o.tab) : null;
+      const old = v2RemoveItem(spec.layout, o.panel_key);
+      // Without a tab or row the panel stays in its own grid.
+      const grid = target ?? ownGrid ?? v2TargetGrid(spec.layout);
+      if (!grid) {
+        throw new OpError('No grid to move the panel into');
+      }
+      const size = defaultSize(el.spec?.vizConfig?.group);
+      const w = clampW(o.width, old?.spec?.width ?? size.w);
+      const h = clampH(o.height, old?.spec?.height ?? size.h);
+      if (ownGrid && ownGrid !== grid) {
+        normalizeGrid(ownGrid.spec.items);
+      }
+      placeInGrid(grid, o.panel_key, w, h, {
+        x: o.x ?? (target ? undefined : old?.spec?.x),
+        y: o.y ?? (target ? undefined : old?.spec?.y),
+      });
+      const where = [o.tab && `tab "${o.tab}"`, o.row && `row "${o.row}"`].filter(Boolean).join(', ');
+      const pos = o.x !== undefined || o.y !== undefined ? `x ${o.x ?? 0}, y ${o.y ?? 0}` : '';
+      const sz = o.width !== undefined || o.height !== undefined ? `${w}×${h}` : '';
+      changes.push({
+        kind: 'other',
+        text: `Move "${el.spec?.title ?? o.panel_key}"${where ? ` to ${where}` : ''}${pos ? ` at ${pos}` : ''}${sz ? `, size ${sz}` : ''}`,
+      });
+    } else if (o.op === 'add_tab') {
+      if (!o.title?.trim()) {
+        throw new OpError('add_tab needs a title');
+      }
+      if (spec.layout.kind !== 'TabsLayout') {
+        wrapInPlace(spec.layout, 'TabsLayout', o.existing_title || 'Overview');
+        if (children(spec.layout).length) {
+          changes.push({ kind: 'other', text: `Put the existing panels in tab "${o.existing_title || 'Overview'}"` });
+        }
+      }
+      if (children(spec.layout).some((t) => sameTitle(t.spec?.title, o.title))) {
+        throw new OpError(`Tab "${o.title}" already exists`);
+      }
+      spec.layout.spec.tabs.push({ kind: 'TabsLayoutTab', spec: { title: o.title.trim(), layout: emptyGrid() } });
+      changes.push({ kind: 'add', text: `Add tab "${o.title.trim()}"` });
+    } else if (o.op === 'add_row') {
+      if (!o.title?.trim()) {
+        throw new OpError('add_row needs a title');
+      }
+      let scope = scopeLayout(spec.layout, o.tab);
+      if (scope.kind === 'TabsLayout') {
+        throw new OpError(`This dashboard has tabs; say which tab the row "${o.title}" goes in`);
+      }
+      if (isGrid(scope)) {
+        wrapInPlace(scope, 'RowsLayout', o.existing_title || 'Overview');
+        if (children(scope).length) {
+          changes.push({ kind: 'other', text: `Put the existing panels in row "${o.existing_title || 'Overview'}"` });
+        }
+      }
+      if (children(scope).some((r) => sameTitle(r.spec?.title, o.title))) {
+        throw new OpError(`Row "${o.title}" already exists`);
+      }
+      scope.spec.rows.push({
+        kind: 'RowsLayoutRow',
+        spec: { title: o.title.trim(), collapse: Boolean(o.collapsed), layout: emptyGrid() },
+      });
+      changes.push({ kind: 'add', text: `Add row "${o.title.trim()}"${o.tab ? ` in tab "${o.tab}"` : ''}` });
+    } else if (o.op === 'rename_container') {
+      const c = findContainer(spec.layout, o.tab, o.row);
+      changes.push({ kind: 'other', text: `Rename ${o.row ? 'row' : 'tab'} "${c.item.spec.title}" → "${o.title}"` });
+      c.item.spec.title = o.title;
+    } else if (o.op === 'remove_container') {
+      const c = findContainer(spec.layout, o.tab, o.row);
+      const inside = v2Items(c.item.spec.layout).length;
+      if (inside) {
+        throw new OpError(
+          `${o.row ? 'Row' : 'Tab'} "${c.item.spec.title}" still has ${inside} panel(s); move or remove them first`
+        );
+      }
+      c.list.splice(c.index, 1);
+      changes.push({ kind: 'remove', text: `Remove ${o.row ? 'row' : 'tab'} "${c.item.spec.title}"` });
     } else if (o.op === 'remove_panel') {
       const el = spec.elements[o.panel_key];
       if (!el) {
         throw new OpError(`panel_key "${o.panel_key}" does not exist on this dashboard`);
       }
+      const grid = findGridOf(spec.layout, { spec: { element: { name: o.panel_key } } });
       delete spec.elements[o.panel_key];
       v2RemoveItem(spec.layout, o.panel_key);
+      if (grid) {
+        normalizeGrid(grid.spec.items);
+      }
       touched.delete(o.panel_key);
       changes.push({ kind: 'remove', text: `Remove panel "${el.spec?.title ?? o.panel_key}"` });
     } else {
@@ -658,6 +1063,92 @@ export function applyV2(original: Json, ops: Operation[], ds: DsTypes): ApplyRes
   }
   const views = [...touched].filter((k) => spec.elements[k]).map((k) => v2View(k, spec.elements[k]));
   return { spec, changes, touched: views };
+}
+
+// ---------------------------------------------------------------- layout facts
+
+export interface PanelPlace {
+  tab?: string;
+  row?: string;
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+}
+
+/** Where every panel sits: its tab, row and grid position. Also returns each grid's items for layout notes. */
+export function panelPlaces(layout: Json): {
+  places: Record<string, PanelPlace>;
+  grids: Array<{ where: string; items: Json[]; auto: boolean }>;
+} {
+  const places: Record<string, PanelPlace> = {};
+  const grids: Array<{ where: string; items: Json[]; auto: boolean }> = [];
+  const walk = (l: Json, tab?: string, row?: string, depth = 0) => {
+    if (!l || depth > 6) {
+      return;
+    }
+    if (l.kind === 'GridLayout' || l.kind === 'AutoGridLayout') {
+      const items: Json[] = l.spec?.items ?? [];
+      grids.push({
+        where: [tab && `tab "${tab}"`, row && `row "${row}"`].filter(Boolean).join(', ') || 'dashboard',
+        items,
+        auto: l.kind === 'AutoGridLayout',
+      });
+      for (const it of items) {
+        const sp = it.spec ?? {};
+        const key = sp.element?.name;
+        if (key) {
+          places[key] = { tab, row, x: sp.x, y: sp.y, w: sp.width, h: sp.height };
+        }
+      }
+      return;
+    }
+    for (const item of l.spec?.tabs ?? []) {
+      walk(item?.spec?.layout, item?.spec?.title, row, depth + 1);
+    }
+    for (const item of l.spec?.rows ?? []) {
+      walk(item?.spec?.layout, tab, item?.spec?.title, depth + 1);
+    }
+  };
+  walk(layout);
+  return { places, grids };
+}
+
+const NEEDS_UNIT = new Set(['timeseries', 'stat', 'gauge', 'bargauge', 'barchart']);
+
+/** Short, factual hints for "optimize this dashboard" (the model decides what to change). */
+export function layoutNotes(spec: Json): string[] {
+  const notes: string[] = [];
+  const { grids } = panelPlaces(spec.layout);
+  for (const g of grids) {
+    if (g.auto) {
+      continue;
+    }
+    const lines = new Map<number, number>();
+    for (const it of g.items) {
+      const y = it.spec?.y ?? 0;
+      lines.set(y, (lines.get(y) ?? 0) + (it.spec?.width ?? 0));
+    }
+    for (const [y, width] of lines) {
+      if (width < 24) {
+        notes.push(`${g.where}: the line at y ${y} uses ${width} of 24 columns`);
+      }
+    }
+    if (g.items.length > 16) {
+      notes.push(`${g.where}: ${g.items.length} panels in one grid; consider rows or tabs`);
+    }
+  }
+  for (const [key, el] of Object.entries<Json>(spec.elements ?? {})) {
+    const s = el.spec ?? {};
+    const type = s.vizConfig?.group;
+    if (NEEDS_UNIT.has(type) && !s.vizConfig?.spec?.fieldConfig?.defaults?.unit) {
+      notes.push(`${key} "${s.title}" (${type}) has no unit`);
+    }
+    if (type !== 'text' && !String(s.title ?? '').trim()) {
+      notes.push(`${key} (${type}) has no title`);
+    }
+  }
+  return notes.slice(0, 20);
 }
 
 // ---------------------------------------------------------------- operations shared by both schemas
@@ -686,36 +1177,51 @@ function applyCommon(spec: Json, o: Operation, changes: ChangeLine[], schema: 'v
     if (existing.some((v) => (v.name ?? v.spec?.name) === o.name)) {
       throw new OpError(`Variable "${o.name}" already exists`);
     }
-    const type = dsTypeOf(ds, o.datasource_uid);
-    const multi = o.multi !== false;
-    if (schema === 'v1') {
-      spec.templating = spec.templating ?? { list: [] };
-      spec.templating.list = [
-        ...(spec.templating.list ?? []),
-        {
+    const kind: VariableKind = o.kind ?? 'query';
+    const multi = kind === 'datasource' ? false : o.multi !== false && kind !== 'textbox';
+    const includeAll = o.include_all ?? (multi && kind === 'query');
+    const label = o.label ?? o.name;
+    const hide = o.hide ? 'hideVariable' : 'dontHide';
+    const csv = String(o.query ?? '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const options = csv.map((v) => {
+      const [text, value] = v.includes(' : ') ? v.split(' : ').map((x) => x.trim()) : [v, v];
+      return { text, value, selected: false };
+    });
+    const first = options[0] ? { text: options[0].text, value: options[0].value } : { text: '', value: '' };
+    const allOrFirst = includeAll ? { text: 'All', value: '$__all' } : first;
+    let detail = o.query ?? '';
+    if (kind === 'query') {
+      if (!o.datasource_uid || !o.query) {
+        throw new OpError(`Query variable "${o.name}" needs datasource_uid and query`);
+      }
+      const type = dsTypeOf(ds, o.datasource_uid);
+      if (schema === 'v1') {
+        pushV1Var(spec, {
           type: 'query',
           name: o.name,
-          label: o.label ?? o.name,
+          label,
+          hide: o.hide ? 2 : 0,
           datasource: { type, uid: o.datasource_uid },
           query: o.query,
           definition: o.query,
+          regex: o.regex ?? '',
           refresh: 2,
           multi,
-          includeAll: multi,
-          current: multi ? { text: 'All', value: '$__all' } : {},
+          includeAll,
+          current: includeAll ? { text: 'All', value: '$__all' } : {},
           options: [],
           sort: 1,
-        },
-      ];
-    } else {
-      spec.variables = [
-        ...(spec.variables ?? []),
-        {
+        });
+      } else {
+        pushV2Var(spec, {
           kind: 'QueryVariable',
           spec: {
             name: o.name,
-            label: o.label ?? o.name,
-            hide: 'dontHide',
+            label,
+            hide,
             refresh: 'onTimeRangeChanged',
             skipUrlSync: false,
             query: {
@@ -726,21 +1232,128 @@ function applyCommon(spec: Json, o: Operation, changes: ChangeLine[], schema: 'v
               spec: { query: o.query, refId: 'v' },
             },
             definition: o.query,
-            regex: '',
+            regex: o.regex ?? '',
             sort: 'alphabeticalAsc',
-            current: multi ? { text: 'All', value: '$__all' } : { text: '', value: '' },
+            current: includeAll ? { text: 'All', value: '$__all' } : { text: '', value: '' },
             options: [],
             multi,
-            includeAll: multi,
+            includeAll,
             allowCustomValue: true,
           },
-        },
-      ];
+        });
+      }
+    } else if (kind === 'custom') {
+      if (!options.length) {
+        throw new OpError(`Custom variable "${o.name}" needs query as comma-separated values`);
+      }
+      if (schema === 'v1') {
+        pushV1Var(spec, {
+          type: 'custom',
+          name: o.name,
+          label,
+          hide: o.hide ? 2 : 0,
+          query: o.query,
+          multi,
+          includeAll,
+          current: allOrFirst,
+          options,
+        });
+      } else {
+        pushV2Var(spec, {
+          kind: 'CustomVariable',
+          spec: {
+            name: o.name,
+            label,
+            hide,
+            skipUrlSync: false,
+            query: o.query,
+            current: allOrFirst,
+            options,
+            multi,
+            includeAll,
+            allowCustomValue: true,
+          },
+        });
+      }
+    } else if (kind === 'datasource') {
+      const pluginId = String(o.ds_type ?? '');
+      if (!/^[a-z0-9-]+$/.test(pluginId)) {
+        throw new OpError(`Data source variable "${o.name}" needs ds_type, e.g. "prometheus"`);
+      }
+      // Panels can now use datasource_uid "${name}".
+      ds[`\${${o.name}}`] = pluginId;
+      ds[`$${o.name}`] = pluginId;
+      detail = `${pluginId} data sources${o.regex ? ` matching ${o.regex}` : ''}`;
+      if (schema === 'v1') {
+        pushV1Var(spec, {
+          type: 'datasource',
+          name: o.name,
+          label,
+          hide: o.hide ? 2 : 0,
+          query: pluginId,
+          regex: o.regex ?? '',
+          refresh: 1,
+          multi: false,
+          includeAll: false,
+          current: {},
+          options: [],
+        });
+      } else {
+        pushV2Var(spec, {
+          kind: 'DatasourceVariable',
+          spec: {
+            name: o.name,
+            label,
+            hide,
+            skipUrlSync: false,
+            pluginId,
+            regex: o.regex ?? '',
+            refresh: 'onDashboardLoad',
+            current: { text: '', value: '' },
+            options: [],
+            multi: false,
+            includeAll: false,
+            allowCustomValue: false,
+          },
+        });
+      }
+    } else {
+      if (schema === 'v1') {
+        pushV1Var(spec, {
+          type: 'textbox',
+          name: o.name,
+          label,
+          hide: o.hide ? 2 : 0,
+          query: o.query ?? '',
+          current: { text: o.query ?? '', value: o.query ?? '' },
+        });
+      } else {
+        pushV2Var(spec, {
+          kind: 'TextVariable',
+          spec: {
+            name: o.name,
+            label,
+            hide,
+            skipUrlSync: false,
+            query: o.query ?? '',
+            current: { text: o.query ?? '', value: o.query ?? '' },
+          },
+        });
+      }
     }
-    changes.push({ kind: 'add', text: `Add variable $${o.name}`, detail: o.query });
+    changes.push({ kind: 'add', text: `Add ${kind} variable $${o.name}`, detail });
   } else {
     throw new OpError(`Unknown operation ${JSON.stringify((o as Json).op)}`);
   }
+}
+
+function pushV1Var(spec: Json, v: Json) {
+  spec.templating = spec.templating ?? { list: [] };
+  spec.templating.list = [...(spec.templating.list ?? []), v];
+}
+
+function pushV2Var(spec: Json, v: Json) {
+  spec.variables = [...(spec.variables ?? []), v];
 }
 
 // ---------------------------------------------------------------- new dashboards
@@ -764,6 +1377,32 @@ export function emptyV1Dashboard(title: string): Json {
   };
 }
 
+export function emptyV2Dashboard(title: string): Json {
+  return {
+    title,
+    description: '',
+    tags: [],
+    editable: true,
+    cursorSync: 'Crosshair',
+    liveNow: false,
+    preload: false,
+    links: [],
+    annotations: [],
+    variables: [],
+    elements: {},
+    layout: { kind: 'GridLayout', spec: { items: [] } },
+    timeSettings: {
+      from: 'now-6h',
+      to: 'now',
+      timezone: 'browser',
+      autoRefresh: '',
+      autoRefreshIntervals: ['5s', '10s', '30s', '1m', '5m', '15m', '30m', '1h', '2h', '1d'],
+      fiscalYearStartMonth: 0,
+      hideTimepicker: false,
+    },
+  };
+}
+
 // ---------------------------------------------------------------- validation helpers
 
 /** Current value of each dashboard variable, as used to run a query for checking. */
@@ -784,9 +1423,16 @@ export function variableValues(spec: Json, schema: 'v1' | 'v2'): Record<string, 
 
 /**
  * Make a dashboard query runnable outside the dashboard: built-in interval variables get fixed values, and
- * dashboard variables get their current value, or ".*" when it is "All" or several values.
+ * dashboard variables get their current value, or ".+" when it is "All" or several values.
  */
 export function substituteVariables(expr: string, values: Record<string, string | undefined>): string {
+  // label="$var" with no single value to put in: check with any value instead (label=~".+").
+  for (const [name, v] of Object.entries(values)) {
+    if (v === undefined || v === '' || v === '$__all') {
+      const ref = `\\$(?:\\{${name}(?::\\w+)?\\}|${name}\\b)`;
+      expr = expr.replace(new RegExp(`([\\w.]+)\\s*=\\s*"${ref}"`, 'g'), '$1=~".+"');
+    }
+  }
   return expr
     .replace(/\$__rate_interval|\$\{__rate_interval\}/g, '2m')
     .replace(/\$__interval_ms|\$\{__interval_ms\}/g, '60000')
@@ -801,8 +1447,36 @@ export function substituteVariables(expr: string, values: Record<string, string 
       if (v === undefined && !(name in values)) {
         return m;
       }
-      return v === undefined || v === '' || v === '$__all' ? '.*' : v;
+      // ".+" rather than ".*": Loki rejects a stream selector that can match nothing but empty labels.
+      return v === undefined || v === '' || v === '$__all' ? '.+' : v;
     });
+}
+
+/** Variables that can hold several values (multi-select or "All"). */
+export function multiValueVariables(spec: Json, schema: 'v1' | 'v2'): string[] {
+  const list: Json[] = schema === 'v1' ? (spec.templating?.list ?? []) : (spec.variables ?? []);
+  return list
+    .map((v) => (schema === 'v1' ? v : v.spec))
+    .filter((s) => s && (s.multi || s.includeAll))
+    .map((s) => s.name);
+}
+
+/**
+ * Panels whose queries compare a label with "=" to a variable that can hold several values. Grafana turns
+ * several values (or "All") into a regex, so "=" never matches and the panel shows no data.
+ */
+export function exactMatchOnMultiValue(views: PanelView[], multi: string[]): string[] {
+  const out: string[] = [];
+  for (const v of views) {
+    for (const name of multi) {
+      const re = new RegExp(`[\\w.]+\\s*=\\s*"\\$(?:\\{${name}(?::\\w+)?\\}|${name}\\b)"`);
+      if (v.queries.some((q) => re.test(q.expr))) {
+        out.push(`"${v.title}" uses ="$${name}"`);
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- where a change is saved
@@ -849,24 +1523,56 @@ export function parseOperations(raw: unknown): Operation[] {
   if (raw.length > MAX_OPERATIONS) {
     throw new OpError(`At most ${MAX_OPERATIONS} operations per proposal`);
   }
+  const str = (v: unknown, max = 200) => (v === undefined || v === null ? undefined : String(v).slice(0, max));
+  const num = (v: unknown) => (v === undefined || v === null || !isFinite(Number(v)) ? undefined : Number(v));
+  const place = (o: Json): Placement => ({ tab: str(o.tab), row: str(o.row), x: num(o.x), y: num(o.y) });
   return raw.map((item: Json) => {
     const o = normaliseOp(item);
     switch (o?.op) {
       case 'add_panel':
-        return { op: 'add_panel', panel: pickPanel(o.panel), row: o.row ? String(o.row) : undefined };
+        return { op: 'add_panel', panel: pickPanel(o.panel), ...place(o) };
       case 'update_panel':
         return { op: 'update_panel', panel_key: String(o.panel_key ?? ''), changes: pickPanel(o.changes) };
       case 'remove_panel':
         return { op: 'remove_panel', panel_key: String(o.panel_key ?? '') };
-      case 'add_variable':
+      case 'move_panel':
+        return {
+          op: 'move_panel',
+          panel_key: String(o.panel_key ?? ''),
+          ...place(o),
+          width: num(o.width),
+          height: num(o.height),
+        };
+      case 'add_tab':
+        return { op: 'add_tab', title: String(o.title ?? ''), existing_title: str(o.existing_title) };
+      case 'add_row':
+        return {
+          op: 'add_row',
+          title: String(o.title ?? ''),
+          tab: str(o.tab),
+          collapsed: o.collapsed === undefined ? undefined : Boolean(o.collapsed),
+          existing_title: str(o.existing_title),
+        };
+      case 'rename_container':
+        return { op: 'rename_container', tab: str(o.tab), row: str(o.row), title: String(o.title ?? '') };
+      case 'remove_container':
+        return { op: 'remove_container', tab: str(o.tab), row: str(o.row) };
+      case 'add_variable': {
+        const kind = ['query', 'custom', 'datasource', 'textbox'].includes(o.kind) ? o.kind : undefined;
         return {
           op: 'add_variable',
           name: String(o.name ?? ''),
-          label: o.label ? String(o.label) : undefined,
-          datasource_uid: String(o.datasource_uid ?? ''),
-          query: String(o.query ?? ''),
+          label: str(o.label),
+          kind,
+          datasource_uid: str(o.datasource_uid),
+          query: str(o.query, 2000),
+          ds_type: str(o.ds_type),
+          regex: str(o.regex, 500),
           multi: o.multi === undefined ? undefined : Boolean(o.multi),
+          include_all: o.include_all === undefined ? undefined : Boolean(o.include_all),
+          hide: o.hide === undefined ? undefined : Boolean(o.hide),
         };
+      }
       case 'set_time':
         return { op: 'set_time', from: String(o.from ?? 'now-6h'), to: String(o.to ?? 'now') };
       case 'set_title':
@@ -877,7 +1583,19 @@ export function parseOperations(raw: unknown): Operation[] {
   });
 }
 
-const OP_NAMES = ['add_panel', 'update_panel', 'remove_panel', 'add_variable', 'set_time', 'set_title'];
+const OP_NAMES = [
+  'add_panel',
+  'update_panel',
+  'remove_panel',
+  'move_panel',
+  'add_tab',
+  'add_row',
+  'rename_container',
+  'remove_container',
+  'add_variable',
+  'set_time',
+  'set_title',
+];
 
 /** Models write operations in a few shapes: {op}, {action|type: op}, or {add_panel: {...}}. Accept all of them. */
 function normaliseOp(item: Json): Json {
@@ -912,6 +1630,7 @@ function pickPanel(raw: unknown): PanelSpec {
   str('datasource_uid', 200);
   str('unit', 50);
   str('content', 5000);
+  str('threshold_style', 20);
   if (p.type !== undefined) {
     out.type = String(p.type) as PanelType;
   }
@@ -927,6 +1646,8 @@ function pickPanel(raw: unknown): PanelSpec {
     out.queries = p.queries.map((q: Json) => ({
       expr: String(typeof q === 'string' ? q : (q?.expr ?? '')).slice(0, 4000),
       legend: q?.legend ? String(q.legend).slice(0, 200) : undefined,
+      ...(q?.name ? { name: String(q.name).slice(0, 100) } : {}),
+      ...(q?.unit ? { unit: String(q.unit).slice(0, 50) } : {}),
     }));
   }
   if (Array.isArray(p.thresholds)) {

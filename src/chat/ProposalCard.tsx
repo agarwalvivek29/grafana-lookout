@@ -14,7 +14,7 @@ import {
   subscribeProposals,
   undoProposal,
 } from '../agent/dashboards';
-import { PanelView, substituteVariables } from '../agent/dashboardOps';
+import { Json, PanelView, substituteVariables } from '../agent/dashboardOps';
 
 const PREVIEW_HEIGHT = 180;
 const RANGE = { from: 'now-1h', to: 'now' };
@@ -98,7 +98,10 @@ function PanelPreview({ view, vars }: { view: PanelView; vars: Record<string, st
           setError(failed.error!);
           return;
         }
-        const series = results.flatMap((r) => r.frames ?? []).slice(0, 20).map((f) => dataFrameFromJSON(f));
+        const series = results
+          .flatMap((r) => r.frames ?? [])
+          .slice(0, 20)
+          .map((f) => dataFrameFromJSON(f));
         if (!series.some((f) => f.length > 0)) {
           setError('no data in the last hour');
           return;
@@ -138,6 +141,141 @@ function PanelPreview({ view, vars }: { view: PanelView; vars: Record<string, st
   );
 }
 
+interface Box {
+  key: string;
+  title: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  row?: boolean;
+}
+
+interface Group {
+  label: string;
+  boxes: Box[];
+}
+
+/** The layout of a dashboard spec as labelled groups of boxes (one per tab/row grid). */
+function layoutGroups(spec: Json, v2: boolean): Group[] {
+  if (!v2) {
+    const boxes: Box[] = (spec.panels ?? []).map((p: Json) => ({
+      key: p.type === 'row' ? `row-${p.id}` : `panel-${p.id}`,
+      title: p.title ?? '',
+      x: p.gridPos?.x ?? 0,
+      y: p.gridPos?.y ?? 0,
+      w: p.gridPos?.w ?? 12,
+      h: p.type === 'row' ? 1 : (p.gridPos?.h ?? 8),
+      row: p.type === 'row',
+    }));
+    return [{ label: '', boxes }];
+  }
+  const groups: Group[] = [];
+  const walk = (l: Json, label: string[]) => {
+    if (!l) {
+      return;
+    }
+    if (l.kind === 'GridLayout' || l.kind === 'AutoGridLayout') {
+      const auto = l.kind === 'AutoGridLayout';
+      groups.push({
+        label: label.join(' · '),
+        boxes: (l.spec?.items ?? []).map((it: Json, i: number) => {
+          const key = it.spec?.element?.name;
+          return {
+            key,
+            title: spec.elements?.[key]?.spec?.title ?? key,
+            x: auto ? (i % 3) * 8 : (it.spec?.x ?? 0),
+            y: auto ? Math.floor(i / 3) * 8 : (it.spec?.y ?? 0),
+            w: auto ? 8 : (it.spec?.width ?? 12),
+            h: auto ? 8 : (it.spec?.height ?? 8),
+          };
+        }),
+      });
+      return;
+    }
+    for (const t of l.spec?.tabs ?? []) {
+      walk(t.spec?.layout, [...label, `Tab: ${t.spec?.title}`]);
+    }
+    for (const r of l.spec?.rows ?? []) {
+      walk(r.spec?.layout, [...label, `Row: ${r.spec?.title}`]);
+    }
+  };
+  walk(spec.layout, []);
+  return groups;
+}
+
+/** Panels that are new or sit somewhere else after the change. */
+function changedKeys(p: Proposal): Set<string> {
+  const after = layoutGroups(p.after, p.apiVersion === 'v2');
+  const before = p.before ? layoutGroups(p.before.spec, (p.beforeApiVersion ?? p.apiVersion) === 'v2') : [];
+  const where = new Map<string, string>();
+  for (const g of before) {
+    for (const b of g.boxes) {
+      where.set(b.key, `${g.label}|${b.x},${b.y},${b.w},${b.h}`);
+    }
+  }
+  const out = new Set<string>();
+  for (const g of after) {
+    for (const b of g.boxes) {
+      if (where.get(b.key) !== `${g.label}|${b.x},${b.y},${b.w},${b.h}`) {
+        out.add(b.key);
+      }
+    }
+  }
+  return out;
+}
+
+const UNIT = 6; // px per grid row in the map
+
+function LayoutMap({ p }: { p: Proposal }) {
+  const s = useStyles2(getStyles);
+  const groups = useMemo(() => layoutGroups(p.after, p.apiVersion === 'v2'), [p]);
+  const changed = useMemo(() => changedKeys(p), [p]);
+  const [all, setAll] = useState(false);
+  // Only worth showing when something is placed differently.
+  if (!changed.size || !groups.some((g) => g.boxes.length)) {
+    return null;
+  }
+  const shown = all ? groups : groups.slice(0, 4);
+  return (
+    <div className={s.map} data-testid="lookout-layout-map">
+      <Text variant="bodySmall" color="secondary">
+        Layout after the change{changed.size ? ` (${changed.size} new or moved, highlighted)` : ''}
+      </Text>
+      {shown.map((g, gi) => {
+        const height = Math.max(4, ...g.boxes.map((b) => b.y + b.h)) * UNIT;
+        return (
+          <div key={gi}>
+            {g.label && <div className={s.mapLabel}>{g.label}</div>}
+            <div className={s.mapGrid} style={{ height }}>
+              {g.boxes.map((b) => (
+                <div
+                  key={b.key}
+                  className={`${s.mapBox} ${changed.has(b.key) ? s.mapChanged : ''} ${b.row ? s.mapRow : ''}`}
+                  style={{
+                    left: `${(b.x / 24) * 100}%`,
+                    width: `calc(${(b.w / 24) * 100}% - 2px)`,
+                    top: b.y * UNIT,
+                    height: b.h * UNIT - 2,
+                  }}
+                  title={b.title}
+                >
+                  {b.title}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      {groups.length > 4 && (
+        <Button size="sm" variant="secondary" fill="text" onClick={() => setAll(!all)}>
+          {all ? 'Show fewer' : `Show all ${groups.length} sections`}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 const CHANGE_ICON = { add: 'plus', update: 'pen', remove: 'trash-alt', other: 'cog' } as const;
 
 function heading(p: Proposal): string {
@@ -158,6 +296,7 @@ export function ProposalCard({ id }: { id: string }) {
   const s = useStyles2(getStyles);
   const p = useProposal(id);
   const [showJson, setShowJson] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   if (!p) {
     return null;
   }
@@ -188,14 +327,25 @@ export function ProposalCard({ id }: { id: string }) {
       {!inactive && (
         <>
           {p.reason && p.status !== 'applied' && <Alert severity="info" title={p.reason} />}
+          {p.status !== 'applied' &&
+            p.notes.map((n) => (
+              <Text key={n} variant="bodySmall" color="secondary">
+                <Icon name="info-circle" size="sm" /> {n}
+              </Text>
+            ))}
           <ul className={s.changes}>
-            {p.changes.map((c, i) => (
+            {(showAll ? p.changes : p.changes.slice(0, 12)).map((c, i) => (
               <li key={i}>
                 <Icon name={CHANGE_ICON[c.kind]} size="sm" /> {c.text}
                 {c.detail && <pre className={s.detail}>{c.detail}</pre>}
               </li>
             ))}
           </ul>
+          {p.changes.length > 12 && (
+            <Button size="sm" variant="secondary" fill="text" onClick={() => setShowAll(!showAll)}>
+              {showAll ? 'Show fewer changes' : `Show all ${p.changes.length} changes`}
+            </Button>
+          )}
           {noData.length > 0 && (
             <Text variant="bodySmall" color="warning">
               <Icon name="exclamation-triangle" size="sm" /> No data in the last hour:{' '}
@@ -207,8 +357,8 @@ export function ProposalCard({ id }: { id: string }) {
               Not checked (data source type): {unchecked.map((c) => `"${c.title}"`).join(', ')}
             </Text>
           )}
-          {p.status !== 'applied' &&
-            p.previews.map((v) => <PanelPreview key={v.key} view={v} vars={p.vars} />)}
+          {p.status !== 'applied' && <LayoutMap p={p} />}
+          {p.status !== 'applied' && p.previews.map((v) => <PanelPreview key={v.key} view={v} vars={p.vars} />)}
           {p.error && <Alert severity="error" title={p.error} />}
           <Stack direction="row" gap={1} wrap="wrap" alignItems="center">
             {(p.status === 'pending' || p.status === 'error') && (
@@ -288,6 +438,45 @@ const getStyles = (theme: GrafanaTheme2) => ({
     align-items: center;
     justify-content: center;
     overflow: hidden;
+  `,
+  map: css`
+    display: flex;
+    flex-direction: column;
+    gap: ${theme.spacing(0.5)};
+  `,
+  mapLabel: css`
+    font-size: ${theme.typography.bodySmall.fontSize};
+    color: ${theme.colors.text.secondary};
+    margin-top: ${theme.spacing(0.5)};
+  `,
+  mapGrid: css`
+    position: relative;
+    background: ${theme.colors.background.primary};
+    border: 1px solid ${theme.colors.border.weak};
+    border-radius: ${theme.shape.radius.default};
+    overflow: hidden;
+  `,
+  mapBox: css`
+    position: absolute;
+    margin: 1px;
+    padding: 0 ${theme.spacing(0.5)};
+    font-size: 10px;
+    line-height: 14px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: ${theme.colors.text.secondary};
+    background: ${theme.colors.background.secondary};
+    border: 1px solid ${theme.colors.border.medium};
+    border-radius: 2px;
+  `,
+  mapChanged: css`
+    color: ${theme.colors.text.primary};
+    border-color: ${theme.colors.primary.border};
+    background: ${theme.colors.primary.transparent};
+  `,
+  mapRow: css`
+    font-weight: ${theme.typography.fontWeightMedium};
   `,
   json: css`
     font-size: ${theme.typography.bodySmall.fontSize};
