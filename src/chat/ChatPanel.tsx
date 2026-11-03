@@ -19,6 +19,7 @@ import {
 import { AgentStep, stepLabel } from '../agent/agent';
 import { SafeMarkdown } from './SafeMarkdown';
 import { LinkPreviews } from './LinkPreviews';
+import { ProposalCard } from './ProposalCard';
 import { ask, newChat, setContext, Turn, useChat } from './store';
 
 const STARTERS_PANEL = ['Explain this panel', 'Is this normal for the last 24 hours?', 'Show related error logs'];
@@ -26,6 +27,7 @@ const STARTERS_PAGE = [
   'Which services have the most errors right now?',
   'Which dashboard shows latency for a service?',
   'Find the slowest traces in the last hour',
+  'Build a dashboard for a service',
 ];
 
 interface ToolStep {
@@ -101,6 +103,7 @@ function Steps({ turn, done }: { turn: Turn; done: boolean }) {
 function TurnView({ turn, last, running }: { turn: Turn; last: boolean; running: boolean }) {
   const s = useStyles2(getStyles);
   const done = !(last && running);
+  const proposalId = [...turn.steps].reverse().find((st) => st.kind === 'proposal')?.text;
   const ref = useRef<HTMLDivElement>(null);
   // When a new turn starts, bring its question to the top so the answer reads from its first line.
   useEffect(() => {
@@ -125,7 +128,8 @@ function TurnView({ turn, last, running }: { turn: Turn; last: boolean; running:
       {!done && <Steps turn={turn} done={false} />}
       {!done && turn.liveText && <SafeMarkdown markdown={turn.liveText} />}
       {turn.answer && <SafeMarkdown markdown={turn.answer} />}
-      {turn.answer && <LinkPreviews markdown={turn.answer} />}
+      {proposalId && (done || turn.answer) && <ProposalCard id={proposalId} />}
+      {turn.answer && !proposalId && <LinkPreviews markdown={turn.answer} />}
       {turn.error && <Alert severity="error" title={turn.error} />}
       {done && <Steps turn={turn} done />}
     </div>

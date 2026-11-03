@@ -11,7 +11,9 @@ a local Ollama, or your own gateway), reached through the open-source
 
 ![Lookout finding why checkout is failing](https://raw.githubusercontent.com/agarwalvivek29/grafana-lookout/main/docs/media/hero.gif)
 
-More examples (explaining panels, finding dashboards, writing queries, reading logs):
+![Lookout building a dashboard from a description](https://raw.githubusercontent.com/agarwalvivek29/grafana-lookout/main/docs/media/build.gif)
+
+More examples (explaining panels, finding dashboards, writing queries, building dashboards, reading logs):
 [see them on GitHub](https://github.com/agarwalvivek29/grafana-lookout#see-it-in-action).
 
 ## What it does
@@ -24,6 +26,9 @@ More examples (explaining panels, finding dashboards, writing queries, reading l
   panel (with the Grafana Image Renderer) or a live chart.
 - **Finds things.** "Where is the latency dashboard for checkout?", "Which services have the most
   errors right now?", "Show me the slowest traces in the last hour".
+- **Builds and edits dashboards.** "Build a dashboard for checkout", "add a p99 line to this panel", "make
+  the error panel a percentage". You see the change with live previews first; nothing is saved until you
+  click Apply, and Undo puts it back. Provisioned dashboards get a copy instead of an in-place change.
 - **Careful by default.** Compares with yesterday before calling something high, reads real error
   traces before calling them failures, and says what is measured and what is a guess.
 
@@ -100,7 +105,8 @@ Explore links still get live charts.
 ## Security and privacy
 
 - Every tool runs in the browser as the signed-in user, through Grafana's own APIs. Lookout sees only
-  what that user can already see, and it only reads; it does not change dashboards or data sources.
+  what that user can already see. The tools only read: a dashboard change is shown as a proposal, and it is
+  saved only when you click its button. The model cannot save anything, and every save can be undone.
 - What leaves your network: the question, the dashboard context, and the tool results needed to answer,
   sent to the model provider you configured. Use a local model (for example Ollama) to keep everything
   inside.

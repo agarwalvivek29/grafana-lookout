@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Build and edit dashboards from chat: create a dashboard, add, change or remove panels, add variables, and set
+  the time range. Changes are shown as a proposal with live previews and saved only when you click Apply; Undo
+  restores the previous version. Works with dashboards stored in the classic and the v2 schema; provisioned and
+  Git Sync dashboards are saved as a copy. See `docs/design/dashboard-editing.md`.
+- Dashboard API calls use the current organisation's namespace instead of always `default`.
+
 ## 0.1.0 (2026-11-03)
 
 First public version.

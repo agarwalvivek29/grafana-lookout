@@ -41,13 +41,15 @@ These decide what gets built and how.
 - **Evaluation suite.** A fixed set of questions against the quickstart stack, run in CI, to catch answer
   regressions when prompts or tools change.
 - **Conversation history.** Keep recent conversations per user across page loads.
+- **Build and edit dashboards (done).** Create dashboards and add, change or remove panels from chat, with a
+  preview and an explicit Apply, and Undo. See [the design](docs/design/dashboard-editing.md).
 
 ## Later: 0.3 (build and fix dashboards)
 
 - **Natural language to query.** "Show p95 latency for checkout by endpoint" becomes a PromQL, LogQL or
   TraceQL query in Explore or a panel editor.
-- **Create and edit dashboards.** The assistant proposes a dashboard or a change, shows a preview, and saves
-  it only on Apply. Works with Git Sync-managed dashboards.
+- **Dashboards in Git Sync repositories.** Dashboard changes already work (0.2) but save a copy for Git
+  Sync-managed dashboards; open a pull request instead.
 - **Service catalog context.** A small provider interface so teams can plug in their own catalog (owners,
   runbooks, dependencies), starting with a file-based provider.
 - **More data sources.** Elasticsearch/OpenSearch logs, VictoriaLogs, Jaeger traces. Each is a contained

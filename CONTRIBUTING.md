@@ -49,6 +49,8 @@ npm run e2e             # Playwright, needs the dev Grafana running
 | Path                        | What it holds                                                                        |
 | --------------------------- | ------------------------------------------------------------------------------------ |
 | `src/agent/agent.ts`        | The agent loop and its tools. Tools are read-only and call Grafana APIs as the user. |
+| `src/agent/dashboardOps.ts` | Pure dashboard editing for the classic and v2 schemas (unit-tested).                 |
+| `src/agent/dashboards.ts`   | The dashboard proposal tool, and Apply/Undo (user actions only).                     |
 | `src/chat/`                 | Chat UI, side panel, safe Markdown, link previews, conversation store.               |
 | `src/components/AppConfig/` | The setup page.                                                                      |
 | `src/module.tsx`            | Entry points: dashboard sidebar, panel menu, command palette.                        |
