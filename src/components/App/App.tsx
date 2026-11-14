@@ -6,6 +6,8 @@ const ChatPage = React.lazy(() => import('../../pages/ChatPage'));
 function App(_props: AppRootProps) {
   return (
     <Routes>
+      {/* A saved or shared conversation. */}
+      <Route path="chat/s/:sessionId" element={<ChatPage />} />
       {/* Full-page chat; every other path falls back to it. */}
       <Route path="*" element={<ChatPage />} />
     </Routes>

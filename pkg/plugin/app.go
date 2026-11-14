@@ -3,9 +3,11 @@ package plugin
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/resource/httpadapter"
 )
 
@@ -22,11 +24,31 @@ var (
 // App is an example app plugin with a backend which can respond to data queries.
 type App struct {
 	backend.CallResourceHandler
+
+	// sessions is nil when no history database is configured or it could not be reached.
+	sessions   SessionStore
+	historyErr string
 }
 
-// NewApp creates a new example *App instance.
-func NewApp(_ context.Context, _ backend.AppInstanceSettings) (instancemgmt.Instance, error) {
+// historyDatabaseURLKey is the secure setting that holds the Postgres URL for conversation history.
+const historyDatabaseURLKey = "historyDatabaseUrl"
+
+// NewApp creates the app instance. Grafana creates a new one whenever the plugin settings change.
+func NewApp(ctx context.Context, settings backend.AppInstanceSettings) (instancemgmt.Instance, error) {
 	var app App
+
+	if url := settings.DecryptedSecureJSONData[historyDatabaseURLKey]; url != "" {
+		// A database that is down must not stop the plugin from loading: chat works without history.
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		store, err := NewPostgresStore(cctx, url)
+		cancel()
+		if err != nil {
+			log.DefaultLogger.Error("conversation history disabled: cannot use the history database", "error", err)
+			app.historyErr = "Cannot use the history database: " + err.Error()
+		} else {
+			app.sessions = store
+		}
+	}
 
 	// Use a httpadapter (provided by the SDK) for resource calls. This allows us
 	// to use a *http.ServeMux for resource calls, so we can map multiple routes
@@ -41,7 +63,9 @@ func NewApp(_ context.Context, _ backend.AppInstanceSettings) (instancemgmt.Inst
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
 // created.
 func (a *App) Dispose() {
-	// cleanup
+	if a.sessions != nil {
+		a.sessions.Close()
+	}
 }
 
 // CheckHealth handles health checks sent from Grafana to the plugin.

@@ -147,6 +147,9 @@ lists the data sources Lookout can use.
 - **Builds and edits dashboards.** "Build a dashboard for checkout", "add a p99 line to this panel", "make
   the error panel a percentage", "rearrange this dashboard", "build a dashboard with tabs for each signal". You see the change with live previews first; nothing is saved until you
   click Apply, and Undo puts it back. Provisioned dashboards get a copy instead of an in-place change.
+- **Keeps your conversations.** Every conversation is saved and named after its first answer, so you can find
+  last week's investigation again, continue it, or share it with your org by link for an RCA or a hand-over.
+  Needs a Postgres database (see [Conversation history](#conversation-history)).
 - **Careful by default.** Compares with yesterday before calling something high, reads real error
   traces before calling them failures, and says what is measured and what is a guess.
 
@@ -216,6 +219,24 @@ apps:
     disabled: false
 ```
 
+### Conversation history
+
+Optional. Lookout saves conversations in a Postgres database you provide (Grafana gives plugins no shared
+database of its own). Create a database and a user that can create tables, then paste its URL under
+**Setup → Conversation history**, or provision it:
+
+```yaml
+- type: agarwalvivek29-lookout-app
+  disabled: false
+  secureJsonData:
+    historyDatabaseUrl: postgres://lookout:$LOOKOUT_DB_PASSWORD@db.internal:5432/lookout?sslmode=require
+```
+
+Lookout creates one table, `lookout_sessions`, on start. Every Grafana replica can point at the same database.
+Conversations belong to the signed-in user and are private until they click **Share**; a shared conversation can
+be read by anyone in the same Grafana organization who has the link, and continued as their own copy.
+Anonymous users get no history.
+
 Panel pictures in previews need the
 [Grafana Image Renderer](https://grafana.com/docs/grafana/latest/setup-grafana/image-rendering/). Without it,
 Explore links still get live charts.
@@ -230,6 +251,9 @@ Explore links still get live charts.
   inside.
 - Tool results (log lines, trace attributes, dashboard text) are treated as data, never as instructions.
   Answers are rendered as sanitized Markdown; only links back into your Grafana are clickable.
+- With conversation history on, questions, answers and tool results (trimmed) are stored in your Postgres
+  database. Sharing a conversation shows those results to everyone in the org who opens the link, even if they
+  cannot query the data sources behind them; Lookout says so before sharing.
 - Set a spend limit on your provider API key; that is the hard limit on cost.
 
 ## Links

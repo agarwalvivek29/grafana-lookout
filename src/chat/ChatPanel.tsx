@@ -20,7 +20,8 @@ import { AgentStep, stepLabel } from '../agent/agent';
 import { SafeMarkdown } from './SafeMarkdown';
 import { LinkPreviews } from './LinkPreviews';
 import { ProposalCard } from './ProposalCard';
-import { ask, newChat, setContext, Turn, useChat } from './store';
+import { ShareButton } from './ShareButton';
+import { ask, continueAsCopy, initHistory, newChat, setContext, Turn, useChat } from './store';
 
 const STARTERS_PANEL = ['Explain this panel', 'Is this normal for the last 24 hours?', 'Show related error logs'];
 const STARTERS_PAGE = [
@@ -129,6 +130,12 @@ function TurnView({ turn, last, running }: { turn: Turn; last: boolean; running:
       {!done && turn.liveText && <SafeMarkdown markdown={turn.liveText} />}
       {turn.answer && <SafeMarkdown markdown={turn.answer} />}
       {proposalId && (done || turn.answer) && <ProposalCard id={proposalId} />}
+      {proposalId && turn.restored && (
+        <Text variant="bodySmall" color="secondary">
+          <Icon name="apps" size="sm" /> A dashboard change was proposed here. Proposals are not kept in history; check
+          the dashboard&apos;s version history for what was saved.
+        </Text>
+      )}
       {turn.answer && !proposalId && <LinkPreviews markdown={turn.answer} />}
       {turn.error && <Alert severity="error" title={turn.error} />}
       {done && <Steps turn={turn} done />}
@@ -138,9 +145,14 @@ function TurnView({ turn, last, running }: { turn: Turn; last: boolean; running:
 
 export function ChatPanel({ panelMode }: { panelMode?: boolean }) {
   const s = useStyles2(getStyles);
-  const { turns, running, context } = useChat();
+  const { turns, running, context, history, title, readOnly, ownerName, loading, loadError, saveError, notice } =
+    useChat();
   const [draft, setDraft] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    initHistory();
+  }, []);
 
   const send = (q: string) => {
     ask(q);
@@ -151,8 +163,18 @@ export function ChatPanel({ panelMode }: { panelMode?: boolean }) {
 
   return (
     <div className={s.root}>
+      {history?.enabled && (title || turns.length > 0) && (
+        <div className={s.sessionBar}>
+          <span className={s.sessionTitle} title={title}>
+            {title ?? 'New conversation'}
+          </span>
+          <ShareButton />
+        </div>
+      )}
       <div className={s.thread}>
-        {turns.length === 0 && (
+        {loading && <Spinner />}
+        {loadError && <Alert severity="error" title={loadError} />}
+        {turns.length === 0 && !loading && !loadError && (
           <div className={s.empty}>
             <Text variant="h5">Ask about your data</Text>
             <Stack direction="column" gap={1}>
@@ -170,49 +192,77 @@ export function ChatPanel({ panelMode }: { panelMode?: boolean }) {
         <div ref={endRef} />
       </div>
       <div className={s.composer}>
-        {context?.dashboard_uid && (
-          <Stack direction="row" gap={0.5} wrap="wrap">
-            <Tag name={`Dashboard: ${context.dashboard_title ?? context.dashboard_uid}`} colorIndex={9} />
-            {context.panel_title && <Tag name={`Panel: ${context.panel_title}`} colorIndex={9} />}
-            {Object.entries(context.variables ?? {})
-              .slice(0, 3)
-              .map(([k, v]) => (
-                <Tag key={k} name={`${k}: ${v === '$__all' ? 'All' : v}`} colorIndex={9} />
-              ))}
-            <IconButton name="times" size="sm" tooltip="Remove context" onClick={() => setContext(null)} />
+        {readOnly ? (
+          <Stack direction="row" justifyContent="space-between" alignItems="center" wrap="wrap">
+            <Text variant="bodySmall" color="secondary">
+              <Icon name="users-alt" size="sm" /> Shared by {ownerName ?? 'someone in your org'} · read-only
+            </Text>
+            <Stack direction="row" gap={1}>
+              <Button variant="secondary" size="sm" onClick={newChat}>
+                New chat
+              </Button>
+              <Button size="sm" icon="comment-alt" onClick={continueAsCopy}>
+                Continue as my copy
+              </Button>
+            </Stack>
           </Stack>
+        ) : (
+          <>
+            {context?.dashboard_uid && (
+              <Stack direction="row" gap={0.5} wrap="wrap">
+                <Tag name={`Dashboard: ${context.dashboard_title ?? context.dashboard_uid}`} colorIndex={9} />
+                {context.panel_title && <Tag name={`Panel: ${context.panel_title}`} colorIndex={9} />}
+                {Object.entries(context.variables ?? {})
+                  .slice(0, 3)
+                  .map(([k, v]) => (
+                    <Tag key={k} name={`${k}: ${v === '$__all' ? 'All' : v}`} colorIndex={9} />
+                  ))}
+                <IconButton name="times" size="sm" tooltip="Remove context" onClick={() => setContext(null)} />
+              </Stack>
+            )}
+            <TextArea
+              value={draft}
+              rows={panelMode ? 2 : 3}
+              placeholder="Ask about metrics, logs, traces or dashboards…"
+              onChange={(e) => setDraft(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  send(draft);
+                }
+              }}
+              disabled={running || loading}
+            />
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Text variant="bodySmall" color="secondary">
+                Uses your Grafana permissions. Answers can be wrong; check the links.
+              </Text>
+              <Stack direction="row" gap={1}>
+                <Button variant="secondary" size="sm" onClick={newChat} disabled={running}>
+                  New chat
+                </Button>
+                <Button
+                  size="sm"
+                  icon={running ? 'spinner' : 'ai-sparkle'}
+                  onClick={() => send(draft)}
+                  disabled={running || !draft.trim()}
+                >
+                  Send
+                </Button>
+              </Stack>
+            </Stack>
+            {saveError && (
+              <Text variant="bodySmall" color="warning">
+                {saveError}
+              </Text>
+            )}
+            {notice && (
+              <Text variant="bodySmall" color="secondary">
+                <Icon name="info-circle" size="sm" /> {notice}
+              </Text>
+            )}
+          </>
         )}
-        <TextArea
-          value={draft}
-          rows={panelMode ? 2 : 3}
-          placeholder="Ask about metrics, logs, traces or dashboards…"
-          onChange={(e) => setDraft(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              send(draft);
-            }
-          }}
-          disabled={running}
-        />
-        <Stack direction="row" justifyContent="space-between" alignItems="center">
-          <Text variant="bodySmall" color="secondary">
-            Uses your Grafana permissions. Answers can be wrong; check the links.
-          </Text>
-          <Stack direction="row" gap={1}>
-            <Button variant="secondary" size="sm" onClick={newChat} disabled={running}>
-              New chat
-            </Button>
-            <Button
-              size="sm"
-              icon={running ? 'spinner' : 'ai-sparkle'}
-              onClick={() => send(draft)}
-              disabled={running || !draft.trim()}
-            >
-              Send
-            </Button>
-          </Stack>
-        </Stack>
       </div>
     </div>
   );
@@ -224,6 +274,22 @@ const getStyles = (theme: GrafanaTheme2) => ({
     flex-direction: column;
     height: 100%;
     min-height: 0;
+  `,
+  sessionBar: css`
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: ${theme.spacing(1)};
+    padding: ${theme.spacing(1, 0)};
+    border-bottom: 1px solid ${theme.colors.border.weak};
+  `,
+  sessionTitle: css`
+    flex: 1;
+    min-width: 0;
+    font-weight: ${theme.typography.fontWeightMedium};
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   `,
   thread: css`
     flex: 1;
