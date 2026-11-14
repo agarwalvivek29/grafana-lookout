@@ -21,8 +21,8 @@ jobs:
 
       - uses: grafana/plugin-actions/build-plugin@b05ed88ddca828d4700149aeacab32fcaf10caa0 # build-plugin/v1.2.1
         with:
-          node-version: '22'
-          go-version: '1.26.10'
+          node-version: '24'
+          go-version: '1.26.11'
           # Signing needs the plugin to be approved in the catalog. Until then releases are unsigned; after
           # approval set the repository variable SIGN_PLUGIN to "true" (gh variable set SIGN_PLUGIN --body true).
           policy_token: ${{ vars.SIGN_PLUGIN == 'true' && secrets.GRAFANA_ACCESS_POLICY_TOKEN || '' }}
