@@ -1,6 +1,6 @@
 module github.com/agarwalvivek29/grafana-lookout
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/grafana/grafana-plugin-sdk-go v0.298.0
@@ -40,7 +40,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/jaegertracing/jaeger-idl v0.14.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.20.1 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.1 // indirect
 	github.com/magefile/mage v1.17.2 // indirect
 	github.com/mattetti/filebuffer v1.0.1 // indirect

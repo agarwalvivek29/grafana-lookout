@@ -71,8 +71,10 @@ export function sessionLink(id: string): string {
 }
 
 export function newSessionId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+  // randomUUID needs a secure context (HTTPS or localhost); Grafana served over plain HTTP still has getRandomValues.
+  if (typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
-  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return `s-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
 }
