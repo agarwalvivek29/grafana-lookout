@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Conversation history: every conversation is saved after each answer and named by the model, listed beside the
+  chat page and behind the history button in the side panel, searchable, renamable and deletable. Share one with
+  your Grafana org by link (for RCAs and hand-overs); people you share with see it read-only and can continue it
+  as their own copy. Needs a Postgres database, set on the Setup page or provisioned as `historyDatabaseUrl`.
+
 ## 0.2.0 (2026-11-03)
 
 - Build and edit dashboards from chat: create a dashboard, add, change or remove panels, add variables, and set

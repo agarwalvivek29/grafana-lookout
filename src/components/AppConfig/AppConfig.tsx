@@ -22,6 +22,7 @@ import {
   useStyles2,
 } from '@grafana/ui';
 import { testIds } from '../testIds';
+import { historyApi } from '../../chat/historyApi';
 
 export interface AppConfigProps extends PluginConfigPageProps<AppPluginMeta<{}>> {}
 
@@ -371,6 +372,84 @@ function PreviewsSection() {
   );
 }
 
+function HistorySection({ plugin }: Pick<AppConfigProps, 'plugin'>) {
+  const s = useStyles2(getStyles);
+  const [configured, setConfigured] = useState(Boolean(plugin.meta.secureJsonFields?.historyDatabaseUrl));
+  const [url, setUrl] = useState('');
+  const [status, setStatus] = useState<Status>({ state: 'idle', text: '' });
+
+  // Grafana recreates the plugin instance whenever its settings are saved, so this tests the saved URL.
+  const check = () =>
+    historyApi
+      .status()
+      .catch((e) => ({ enabled: false, error: errorText(e) }))
+      .then((h) =>
+        setStatus(
+          h.enabled
+            ? { state: 'ok', text: 'Connected: conversations are saved and can be shared by link.' }
+            : { state: 'error', text: h.error ?? 'Not connected.' }
+        )
+      );
+
+  const initiallyConfigured = Boolean(plugin.meta.secureJsonFields?.historyDatabaseUrl) && plugin.meta.enabled;
+  useEffect(() => {
+    if (initiallyConfigured) {
+      check();
+    }
+  }, [initiallyConfigured]);
+
+  const save = async (value: string) => {
+    setStatus({ state: 'busy', text: value ? 'Saving and connecting…' : 'Removing…' });
+    try {
+      await post(`/api/plugins/${plugin.meta.id}/settings`, {
+        enabled: plugin.meta.enabled,
+        pinned: plugin.meta.pinned,
+        jsonData: plugin.meta.jsonData ?? {},
+        secureJsonData: { historyDatabaseUrl: value },
+      });
+      setConfigured(Boolean(value));
+      setUrl('');
+      if (value) {
+        await check();
+      } else {
+        setStatus({ state: 'idle', text: '' });
+      }
+    } catch (e) {
+      setStatus({ state: 'error', text: `Save failed: ${errorText(e)}` });
+    }
+  };
+
+  return (
+    <div className={s.section}>
+      <Text>
+        Save every conversation so people can find it again, and share it with their org by link (for example in an
+        RCA). Needs a Postgres database; Lookout creates its one table, <code>lookout_sessions</code>, on first use.
+      </Text>
+      <Field label="Postgres URL" description="For example postgres://lookout:password@db:5432/lookout?sslmode=require">
+        <SecretInput
+          width={60}
+          value={url}
+          isConfigured={configured}
+          placeholder="postgres://user:password@host:5432/database"
+          onChange={(e) => setUrl(e.currentTarget.value)}
+          onReset={() => save('')}
+        />
+      </Field>
+      <Stack direction="row" gap={1}>
+        <Button onClick={() => save(url.trim())} disabled={!url.trim() || status.state === 'busy'}>
+          Save
+        </Button>
+        {configured && (
+          <Button variant="secondary" onClick={check} disabled={status.state === 'busy'}>
+            Test
+          </Button>
+        )}
+      </Stack>
+      {status.text && <StatusLine status={status} />}
+    </div>
+  );
+}
+
 const AppConfig = ({ plugin }: AppConfigProps) => {
   const s = useStyles2(getStyles);
   const enable = async () => {
@@ -405,6 +484,10 @@ const AppConfig = ({ plugin }: AppConfigProps) => {
         3. Panel previews (optional)
       </Text>
       <PreviewsSection />
+      <Text element="h3" variant="h4">
+        4. Conversation history (optional)
+      </Text>
+      <HistorySection plugin={plugin} />
     </div>
   );
 };

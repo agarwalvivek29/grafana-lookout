@@ -1,10 +1,12 @@
 // Module-scope conversation store (R3/D5): lives outside React so it survives page navigation
-// and drawer close/reopen. Persistence to plugin user storage comes later (M1).
+// and drawer close/reopen. Every finished turn is also saved to the conversation history (historyApi)
+// when an admin has configured a history database.
 import { useSyncExternalStore } from 'react';
 import { toRecord, urlVariables } from './vars';
 import { llm } from '@grafana/llm';
 import { runAgent, AgentStep } from '../agent/agent';
 import { takeProposalNotes } from '../agent/dashboards';
+import { errorText, historyApi, HistoryStatus, newSessionId } from './historyApi';
 
 export interface ChatContext {
   dashboard_uid?: string;
@@ -27,17 +29,46 @@ export interface Turn {
   finishedAt?: number;
   /** What changed on the dashboard since the previous question (shown above the question). */
   contextChanges?: string[];
+  /** Loaded from history: dashboard proposals from that time are no longer in memory. */
+  restored?: boolean;
 }
 
-interface State {
+export interface State {
   turns: Turn[];
   running: boolean;
   context: ChatContext | null;
   /** The user removed the context chips; don't re-attach dashboard context until they reopen. */
   contextCleared?: boolean;
+  /** Id this conversation is saved under; a new chat gets a new one. */
+  sessionId: string;
+  title?: string;
+  shared: boolean;
+  /** Someone else's shared conversation: readable, not continuable (see continueAsCopy). */
+  readOnly: boolean;
+  ownerName?: string;
+  /** A saved conversation is being fetched. */
+  loading: boolean;
+  loadError?: string;
+  saveError?: string;
+  /** Something the user should know about how this conversation was saved. */
+  notice?: string;
+  /** null until the backend has said whether history is configured. */
+  history: HistoryStatus | null;
+  /** Bumped after every save, rename or delete so history lists refresh. */
+  listVersion: number;
 }
 
-let state: State = { turns: [], running: false, context: null };
+let state: State = {
+  turns: [],
+  running: false,
+  context: null,
+  sessionId: newSessionId(),
+  shared: false,
+  readOnly: false,
+  loading: false,
+  history: null,
+  listVersion: 0,
+};
 let history: llm.Message[] = [];
 const listeners = new Set<() => void>();
 let nextId = 1;
@@ -51,6 +82,10 @@ function updateTurn(id: number, patch: Partial<Turn> | ((t: Turn) => Partial<Tur
   set({
     turns: state.turns.map((t) => (t.id === id ? { ...t, ...(typeof patch === 'function' ? patch(t) : patch) } : t)),
   });
+}
+
+export function getChatState(): State {
+  return state;
 }
 
 export function useChat(): State {
@@ -135,7 +170,311 @@ function describeChanges(before: ChatContext | null, after: ChatContext | null):
 export function newChat() {
   history = [];
   lastAskedContext = null;
-  set({ turns: [], running: false });
+  titlePending = false;
+  version = 0;
+  set({
+    turns: [],
+    running: false,
+    sessionId: newSessionId(),
+    title: undefined,
+    shared: false,
+    readOnly: false,
+    ownerName: undefined,
+    loading: false,
+    loadError: undefined,
+    saveError: undefined,
+    notice: undefined,
+  });
+}
+
+// ---- Conversation history -------------------------------------------------------------------------
+
+/** What is stored per conversation. The backend keeps it as opaque JSON. */
+interface SavedData {
+  version: 1;
+  turns: Turn[];
+  history: llm.Message[];
+  lastAskedContext: ChatContext | null;
+}
+
+// Tool results can be large (log lines, series); keep enough to read the investigation back and to let the
+// model continue it, without saving megabytes per conversation.
+const MAX_STEP_CHARS = 4000;
+const MAX_MESSAGE_CHARS = 16000;
+const TITLE_CHARS = 80;
+
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}… [trimmed ${text.length - max} characters]` : text;
+}
+
+function savedData(): SavedData {
+  return {
+    version: 1,
+    turns: state.turns.map(({ restored: _restored, ...t }) => ({
+      ...t,
+      liveText: '',
+      steps: t.steps.filter((st) => st.kind !== 'stats').map((st) => ({ ...st, text: clip(st.text, MAX_STEP_CHARS) })),
+    })),
+    history: history.map((m) =>
+      m.role === 'tool' && typeof m.content === 'string' ? { ...m, content: clip(m.content, MAX_MESSAGE_CHARS) } : m
+    ),
+    lastAskedContext,
+  };
+}
+
+let statusRequest: Promise<HistoryStatus> | null = null;
+
+/** Asks the backend once whether history is configured. Safe to call from every component. */
+export function initHistory(): Promise<HistoryStatus> {
+  if (!statusRequest) {
+    statusRequest = historyApi
+      .status()
+      .catch((e): HistoryStatus => ({ enabled: false, error: errorText(e) }))
+      .then((h) => {
+        set({ history: h });
+        return h;
+      });
+  }
+  return statusRequest;
+}
+
+/** Re-check after an admin changes the history database on the Setup page. */
+export function refreshHistoryStatus(): Promise<HistoryStatus> {
+  statusRequest = null;
+  return initHistory();
+}
+
+/** The title has been generated but not saved yet. Sent once, so a rename elsewhere is not overwritten. */
+let titlePending = false;
+/** Version of this conversation as last loaded or saved by this tab; 0 when it has never been saved. */
+let version = 0;
+let saveChain: Promise<void> = Promise.resolve();
+
+function isConflict(e: unknown): boolean {
+  return (e as { status?: number })?.status === 409;
+}
+
+async function saveNow(id: string): Promise<void> {
+  const title = titlePending ? state.title : undefined;
+  const res = await historyApi.save(id, {
+    base_version: version,
+    title,
+    turn_count: state.turns.length,
+    data: savedData(),
+  });
+  version = res.version;
+  if (title === state.title) {
+    titlePending = false;
+  }
+}
+
+function persist(): Promise<void> {
+  const id = state.sessionId;
+  saveChain = saveChain.then(async () => {
+    const h = await initHistory();
+    if (!h.enabled || state.readOnly || !state.turns.length || state.sessionId !== id) {
+      return;
+    }
+    try {
+      try {
+        await saveNow(id);
+      } catch (e) {
+        if (!isConflict(e) || state.sessionId !== id) {
+          throw e;
+        }
+        // Another tab saved this conversation since this tab loaded it. Keep both: this tab's version becomes
+        // a conversation of its own instead of overwriting the other one.
+        const title = `${state.title ?? fallbackTitle(state.turns[0].question)} (copy)`;
+        version = 0;
+        titlePending = true;
+        set({
+          sessionId: newSessionId(),
+          title,
+          shared: false,
+          notice: `This conversation was also continued in another tab, so this tab's version was saved separately as “${title}”.`,
+        });
+        await saveNow(state.sessionId);
+      }
+      set({ saveError: undefined, listVersion: state.listVersion + 1 });
+    } catch (e) {
+      set({ saveError: `Not saved to history: ${errorText(e)}` });
+    }
+  });
+  return saveChain;
+}
+
+function fallbackTitle(question: string): string {
+  const q = question.replace(/\s+/g, ' ').trim();
+  return q.length > TITLE_CHARS ? `${q.slice(0, TITLE_CHARS - 1)}…` : q;
+}
+
+/** Turns the model's reply into a one-line title, or undefined when it is unusable. */
+export function cleanGeneratedTitle(text: string): string | undefined {
+  const line = text
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .split('\n')
+    .map((l) => l.trim())
+    .find(Boolean)
+    ?.replace(/^(?:title:\s*)/i, '')
+    .replace(/^["'#*\s]+|["'*.\s]+$/g, '');
+  // A line ending in a colon is the start of an answer ("I can see these data sources:"), not a title.
+  return line && line.length <= 120 && !line.endsWith(':') && line.split(/\s+/).length <= 14 ? line : undefined;
+}
+
+/** Names the conversation after its first answer: a few words an on-call engineer would search for later. */
+async function generateTitle(turn: Turn): Promise<string> {
+  const fallback = fallbackTitle(turn.question);
+  if (!turn.answer?.trim()) {
+    // Without an answer the model tends to answer the question instead of naming it.
+    return fallback;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const res = await Promise.race([
+      llm.chatCompletions({
+        model: llm.Model.BASE,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You name saved conversations. Reply with the title only: at most 8 words, like an incident or RCA ' +
+              'title, naming the service, symptom and time if known. No quotes, no trailing punctuation. Do not ' +
+              'answer the question or add anything else.',
+          },
+          {
+            role: 'user',
+            content:
+              'Name this conversation.\n\n<conversation>\n' +
+              `<question>${clip(turn.question, 1000)}</question>\n` +
+              `<answer>${clip(turn.answer, 2000)}</answer>\n</conversation>`,
+          },
+        ],
+      }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), 20000);
+      }),
+    ]);
+    return cleanGeneratedTitle(res.choices[0]?.message?.content ?? '') ?? fallback;
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function afterTurn(turn: Turn) {
+  const id = state.sessionId;
+  if (!state.title) {
+    // Save straight away under the question, then again once the model has named it.
+    set({ title: fallbackTitle(turn.question) });
+    titlePending = true;
+    persist();
+    const h = await initHistory();
+    if (!h.enabled) {
+      return;
+    }
+    const title = await generateTitle(turn);
+    if (state.sessionId !== id) {
+      return;
+    }
+    if (title !== state.title) {
+      set({ title });
+      titlePending = true;
+    }
+  }
+  persist();
+}
+
+/** Opens a saved conversation (yours, or one shared with your org). */
+export async function openSession(id: string) {
+  if (state.running || (id === state.sessionId && (state.turns.length || state.loading))) {
+    return;
+  }
+  history = [];
+  lastAskedContext = null;
+  titlePending = false;
+  version = 0;
+  set({
+    sessionId: id,
+    turns: [],
+    title: undefined,
+    shared: false,
+    readOnly: false,
+    ownerName: undefined,
+    loading: true,
+    loadError: undefined,
+    saveError: undefined,
+    notice: undefined,
+  });
+  try {
+    const s = await historyApi.get<SavedData>(id);
+    if (state.sessionId !== id) {
+      return;
+    }
+    const turns = (s.data?.turns ?? []).map((t) => ({ ...t, liveText: '', restored: true }));
+    history = s.data?.history ?? [];
+    lastAskedContext = s.data?.lastAskedContext ?? null;
+    nextId = Math.max(nextId, ...turns.map((t) => t.id + 1));
+    version = s.version;
+    set({
+      turns,
+      title: s.title,
+      shared: s.shared,
+      readOnly: !s.is_owner,
+      ownerName: s.owner_name,
+      loading: false,
+    });
+  } catch (e) {
+    if (state.sessionId === id) {
+      set({ loading: false, loadError: errorText(e) });
+    }
+  }
+}
+
+/** Starts a conversation of your own from a shared one, so you can keep asking where the owner stopped. */
+export function continueAsCopy() {
+  if (!state.readOnly) {
+    return;
+  }
+  titlePending = true;
+  version = 0;
+  set({
+    sessionId: newSessionId(),
+    readOnly: false,
+    shared: false,
+    ownerName: undefined,
+    title: state.title ? `${state.title} (continued)` : undefined,
+  });
+  persist();
+}
+
+export async function renameSession(id: string, title: string) {
+  await historyApi.patch(id, { title });
+  if (state.sessionId === id) {
+    titlePending = false;
+    set({ title });
+  }
+  set({ listVersion: state.listVersion + 1 });
+}
+
+export async function setSessionShared(id: string, shared: boolean) {
+  if (id === state.sessionId) {
+    // The current conversation may still be waiting to be saved; it must exist before it can be shared.
+    await persist();
+  }
+  await historyApi.patch(id, { shared });
+  if (state.sessionId === id) {
+    set({ shared });
+  }
+  set({ listVersion: state.listVersion + 1 });
+}
+
+export async function deleteSession(id: string) {
+  await historyApi.remove(id);
+  if (state.sessionId === id) {
+    newChat();
+  }
+  set({ listVersion: state.listVersion + 1 });
 }
 
 function withContext(question: string, ctx: ChatContext | null, changes: string[] = []): string {
@@ -162,7 +501,7 @@ function withContext(question: string, ctx: ChatContext | null, changes: string[
 let lastAskedContext: ChatContext | null = null;
 
 export async function ask(question: string) {
-  if (state.running || !question.trim()) {
+  if (state.running || state.readOnly || state.loading || !question.trim()) {
     return;
   }
   // Re-read what the user sees right now (variables, time range, dashboard) before every question.
@@ -195,5 +534,9 @@ export async function ask(question: string) {
   } finally {
     updateTurn(id, { finishedAt: Date.now(), liveText: '' });
     set({ running: false });
+    const done = state.turns.find((t) => t.id === id);
+    if (done) {
+      afterTurn(done);
+    }
   }
 }

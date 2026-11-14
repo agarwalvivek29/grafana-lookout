@@ -20,6 +20,16 @@ services:
       GF_RENDERING_RENDERER_TOKEN: ${RENDERER_TOKEN:-dev-renderer-token}
     depends_on:
       - renderer
+      - history-db
+
+  # Conversation history (provisioned in provisioning/plugins/apps.yaml). Anonymous users get no history,
+  # so sign in (ANONYMOUS_AUTH_ENABLED=false, admin/admin) to try it.
+  history-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: lookout
+      POSTGRES_PASSWORD: lookout
+      POSTGRES_DB: lookout
 
   renderer:
     image: grafana/grafana-image-renderer:v5.12.7

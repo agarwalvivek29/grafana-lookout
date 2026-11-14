@@ -4,3 +4,6 @@ apps:
   - type: 'agarwalvivek29-lookout-app'
     org_id: 1
     disabled: false
+    secureJsonData:
+      # Development database from docker-compose.yaml.
+      historyDatabaseUrl: postgres://lookout:lookout@history-db:5432/lookout?sslmode=disable

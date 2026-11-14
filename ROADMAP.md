@@ -40,7 +40,8 @@ These decide what gets built and how.
 - **Panels over raw IDs.** Link panels by title instead of naming internal panel keys.
 - **Evaluation suite.** A fixed set of questions against the quickstart stack, run in CI, to catch answer
   regressions when prompts or tools change.
-- **Conversation history.** Keep recent conversations per user across page loads.
+- **Conversation history (done).** Conversations are saved per user in a Postgres database, named after the
+  first answer, and can be shared with the org by link.
 - **Build and edit dashboards (done).** Create dashboards and add, change or remove panels from chat, with a
   preview and an explicit Apply, and Undo. See [the design](docs/design/dashboard-editing.md).
 
