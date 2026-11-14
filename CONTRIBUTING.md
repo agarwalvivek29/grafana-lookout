@@ -113,8 +113,10 @@ git push --force-with-lease
 ## Releases
 
 Maintainers release by bumping the version in `package.json`, moving the `CHANGELOG.md` entries under the new
-version, and pushing a `vX.Y.Z` tag. The release workflow builds, signs and attaches the plugin zip to a GitHub
-release, which is then submitted to the Grafana plugin catalog.
+version, and pushing a `vX.Y.Z` tag. The release workflow builds, validates and attaches the plugin zip (with its
+SHA-1) to a GitHub release, then the release is submitted to the Grafana plugin catalog with **Update
+Submission**. Builds are signed when the repository variable `SIGN_PLUGIN` is `true` (set once the plugin is
+approved in the catalog; it uses the `GRAFANA_ACCESS_POLICY_TOKEN` secret).
 
 ## License
 
